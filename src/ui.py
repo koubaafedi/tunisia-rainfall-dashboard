@@ -4,81 +4,75 @@ from streamlit_folium import st_folium
 import pandas as pd
 
 def apply_custom_css():
-    """Injects custom CSS to fix visibility and style."""
+    """Injects modern, premium CSS."""
     st.markdown("""
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap');
         
         html, body, [class*="css"] {
-            font-family: 'Cairo', sans-serif;
-            color: #2c3e50; /* Dark blue text */
+            font-family: 'Poppins', sans-serif;
+            color: #2c3e50;
         }
         
         .stApp {
-            background-color: #f0f2f6; /* Light gray background */
+            background-color: #f8f9fa;
+        }
+        
+        /* Sidebar Styling */
+        section[data-testid="stSidebar"] {
+            background-color: #ffffff;
+            border-right: 1px solid #e9ecef;
+            box-shadow: 2px 0 5px rgba(0,0,0,0.02);
         }
         
         /* Metric Cards */
         div[data-testid="stMetric"] {
-            background-color: #ffffff;
-            padding: 15px;
-            border-radius: 12px;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.05);
-            text-align: center;
-            border: 1px solid #e1e4e8;
+            background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
+            padding: 20px;
+            border-radius: 16px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.04), 0 1px 3px rgba(0,0,0,0.08);
+            border: 1px solid #e9ecef;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
         }
         
-        /* Fix label color (was white on white) */
+        div[data-testid="stMetric"]:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 15px rgba(0,0,0,0.08);
+        }
+        
+        /* Metric Labels & Values */
         div[data-testid="stMetricLabel"] {
-            font-size: 1rem;
-            color: #7f8c8d !important; 
+            font-size: 0.9rem;
+            color: #6c757d !important;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 600;
         }
         
-        /* Fix value color */
         div[data-testid="stMetricValue"] {
-            font-size: 1.8rem;
+            font-size: 2rem;
             color: #2c3e50 !important;
             font-weight: 700;
         }
 
-        h1, h2, h3 {
+        /* Header Styling */
+        h1 {
+            font-weight: 700;
             color: #2c3e50;
-            text-align: center;
+            letter-spacing: -1px;
+        }
+        h2, h3, h4 {
+            color: #34495e;
         }
         
-        /* Map container */
+        /* Map Container */
         iframe {
-            border-radius: 12px;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            border-radius: 16px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+            border: 1px solid #e9ecef;
         }
-    </style>
-    """, unsafe_allow_html=True)
-
-def render_header():
-    st.title("💧 Ressources Hydrauliques Tunisie")
-    st.markdown("<h4 style='text-align: center; color: #7f8c8d;'>Surveillance et Analyse Quotidienne</h4>", unsafe_allow_html=True)
-
-def render_metrics(df_day):
-    st.markdown("---")
-    c1, c2, c3, c4 = st.columns(4)
-    
-    unique_dates = df_day['date_dt'].unique()
-    date_str = pd.to_datetime(unique_dates[0]).strftime('%d-%m-%Y') if len(unique_dates) > 0 else "-"
-    
-    c1.metric("📅 Date", date_str)
-    c2.metric("🔢 Stations", len(df_day))
-    
-    avg_rain = df_day['pluvio_du_jour'].mean() if 'pluvio_du_jour' in df_day.columns else 0
-    c3.metric("🌧️ Moyenne", f"{avg_rain:.1f} mm")
-    
-    max_rain = df_day['pluvio_du_jour'].max() if 'pluvio_du_jour' in df_day.columns else 0
-    c4.metric("⛈️ Max", f"{max_rain:.1f} mm")
-    st.markdown("---")
-
-def render_map(df_day):
-    # Inject CSS for transparent markers and improved legend
-    st.markdown("""
-    <style>
+        
+        /* Map Icons */
         .map-icon {
             background: rgba(0,0,0,0) !important;
             border: none !important;
@@ -88,6 +82,31 @@ def render_map(df_day):
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     """, unsafe_allow_html=True)
 
+def render_header():
+    st.markdown("""
+        <div style='text-align: center; padding: 20px 0 30px 0;'>
+            <h1 style='margin: 0;'>💧 Ressources Hydrauliques</h1>
+            <p style='color: #7f8c8d; font-size: 1.1rem;'>Surveillance et Analyse Quotidienne des Nappes</p>
+        </div>
+    """, unsafe_allow_html=True)
+
+def render_metrics(df_day):
+    c1, c2, c3, c4 = st.columns(4)
+    
+    unique_dates = df_day['date_dt'].unique()
+    date_str = pd.to_datetime(unique_dates[0]).strftime('%d-%m-%Y') if len(unique_dates) > 0 else "-"
+    
+    c1.metric("📅 Date", date_str)
+    c2.metric("🔢 Stations", f"{len(df_day)}")
+    
+    avg_rain = df_day['pluvio_du_jour'].mean() if 'pluvio_du_jour' in df_day.columns else 0
+    c3.metric("🌧️ Moyenne", f"{avg_rain:.1f} mm")
+    
+    max_rain = df_day['pluvio_du_jour'].max() if 'pluvio_du_jour' in df_day.columns else 0
+    c4.metric("⛈️ Max", f"{max_rain:.1f} mm")
+    st.markdown("<br>", unsafe_allow_html=True)
+
+def render_map(df_day):
     st.subheader("🗺️ Carte Interactive")
     
     if df_day.empty or 'latitude' not in df_day.columns:
