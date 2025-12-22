@@ -59,6 +59,13 @@ def load_raw_data() -> pd.DataFrame:
             df_merged['diff_year'] = df_merged['cumul_periode'] - df_merged['cumul_periode_precedente']
             df_merged['trend_arrow'] = df_merged['diff_year'].apply(lambda x: "⬆️" if x >= 0 else "⬇️")
             
+            def get_trend_cat(x):
+                if x > 0: return 'En Hausse'
+                elif x < 0: return 'En Baisse'
+                return 'Stable'
+            
+            df_merged['trend_category'] = df_merged['diff_year'].apply(get_trend_cat)
+            
         return df_merged
 
     except Exception as e:
