@@ -68,8 +68,22 @@ if df is not None:
             ]
 
     # --- RENDER UI ---
-    ui.render_metrics(df_day)
-    ui.render_map(df_day)
+    tab_map, tab_charts, tab_data = st.tabs(["🗺️ Carte", "📊 Analyse", "💾 Données"])
+    
+    with tab_map:
+        ui.render_metrics(df_day)
+        
+        # Add Heatmap Toggle
+        show_heatmap = st.toggle("🔥 Afficher la Heatmap (Densité de pluie)", value=False)
+        ui.render_map(df_day, show_heatmap=show_heatmap)
+
+    with tab_charts:
+        st.subheader("📊 Analyse Détaillée")
+        ui.render_charts(df_day)
+
+    with tab_data:
+        st.subheader("💾 Données Brutes")
+        ui.render_data_table(df_day)
     
     with st.expander("📂 Données Brutes"):
         cols = [c for c in ['date', 'station', 'nom_ar', 'pluvio_du_jour', 'status', 'pct'] if c in df_day.columns]
