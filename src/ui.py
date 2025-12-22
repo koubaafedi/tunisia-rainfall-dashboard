@@ -75,6 +75,21 @@ def render_metrics(df_day):
     c4.metric("⛈️ Max", f"{max_rain:.1f} mm")
     st.markdown("---")
 
+def add_legend(m):
+    legend_html = """
+    <div style="position: fixed; 
+                bottom: 50px; right: 50px; width: 150px; height: 130px; 
+                background-color: white; border:2px solid grey; z-index:9999; font-size:14px;
+                padding: 10px; border-radius: 10px; opacity: 0.9;">
+    <b>Légende (Niveau)</b><br>
+    <i style="background:#e74c3c; width:10px; height:10px; display:inline-block; border-radius:50%;"></i> Critique (<60%)<br>
+    <i style="background:#f39c12; width:10px; height:10px; display:inline-block; border-radius:50%;"></i> Alerte (60-90%)<br>
+    <i style="background:#2ecc71; width:10px; height:10px; display:inline-block; border-radius:50%;"></i> Normal (90-110%)<br>
+    <i style="background:#3498db; width:10px; height:10px; display:inline-block; border-radius:50%;"></i> Excédentaire (>110%)
+    </div>
+    """
+    m.get_root().html.add_child(folium.Element(legend_html))
+
 def render_map(df_day):
     st.subheader("🗺️ Carte Interactive")
     
@@ -83,6 +98,7 @@ def render_map(df_day):
         return
 
     m = folium.Map(location=[34.0, 9.5], zoom_start=7, tiles="CartoDB positron")
+    add_legend(m)
     
     # Column mapping logic
     name_col = next((c for c in ['nom_ar', 'nom_fr', 'nom', 'station'] if c in df_day.columns), 'station')
@@ -91,8 +107,7 @@ def render_map(df_day):
         # Get logic
         pct = row.get('pct', 0)
         
-        # Color logic duplicated here or imported? 
-        # Better to have it in a helper, but for now inline is fine for 'render'
+        # Color logic
         if pct < 60: color, status = "#e74c3c", "Critique"
         elif pct < 90: color, status = "#f39c12", "Alerte"
         elif pct < 110: color, status = "#2ecc71", "Normal"
@@ -101,12 +116,26 @@ def render_map(df_day):
         name = row.get(name_col, "Inconnu")
         rain = row.get('pluvio_du_jour', 0)
         
+        # Trend Logic
+        current = row.get('cumul_periode', 0)
+        prev = row.get('cumul_periode_precedente', 0)
+        diff = row.get('diff_year', 0)
+        arrow = row.get('trend_arrow', '➡️')
+        
+        # Color for diff
+        diff_color = "green" if diff >= 0 else "red"
+        
         html = f"""
-        <div style="font-family: 'Cairo'; text-align: right; direction: rtl; width: 180px;">
-            <b style="color: #2c3e50; font-size: 14px;">{name}</b>
+        <div style="font-family: 'Cairo'; text-align: right; direction: rtl; width: 220px;">
+            <b style="color: #2c3e50; font-size: 16px;">{name}</b>
             <hr style="margin: 5px 0; border-top: 1px solid #eee;">
-            💧 Pluie: <b>{rain} mm</b><br>
-            📊 État: <span style="color: {color}; font-weight: bold;">{status}</span>
+            <div style="font-size: 13px; line-height: 1.6;">
+                💧 Pluie Jour: <b>{rain} mm</b><br>
+                📊 État: <span style="color: {color}; font-weight: bold;">{status}</span><br>
+                📉 Cumul Saison: <b>{current:.1f} mm</b><br>
+                ⏮️ Saison Préc: <b>{prev:.1f} mm</b><br>
+                ⚖️ Diff: <span style="color: {diff_color}; font-weight: bold;">{arrow} {diff:+.1f} mm</span>
+            </div>
         </div>
         """
         

@@ -45,7 +45,7 @@ def load_raw_data() -> pd.DataFrame:
             df_merged['date_dt'] = pd.to_datetime(df_merged['date'], errors='coerce')
             
         # Fix Numerics
-        cols = ['cumul_periode', 'cumul_moy_periode', 'pluvio_du_jour', 'latitude', 'longitude']
+        cols = ['cumul_periode', 'cumul_moy_periode', 'pluvio_du_jour', 'latitude', 'longitude', 'cumul_periode_precedente']
         for c in cols:
             if c in df_merged.columns:
                 df_merged[c] = pd.to_numeric(df_merged[c], errors='coerce').fillna(0)
@@ -53,6 +53,11 @@ def load_raw_data() -> pd.DataFrame:
         # Calculate Logic
         if 'cumul_moy_periode' in df_merged.columns and 'cumul_periode' in df_merged.columns:
             df_merged['pct'] = (df_merged['cumul_periode'] / df_merged['cumul_moy_periode'].replace(0, 1)) * 100
+        
+        # Calculate Yearly Trend
+        if 'cumul_periode' in df_merged.columns and 'cumul_periode_precedente' in df_merged.columns:
+            df_merged['diff_year'] = df_merged['cumul_periode'] - df_merged['cumul_periode_precedente']
+            df_merged['trend_arrow'] = df_merged['diff_year'].apply(lambda x: "⬆️" if x >= 0 else "⬇️")
             
         return df_merged
 
