@@ -130,16 +130,17 @@ if not df_all.empty:
         ui.render_about_page()
 
     with tab_research:
-        st.subheader("🧪 Ground Truth vs. Rainfall Proxy Research")
+        st.subheader("🧪 Ground Truth vs. Effective Recharge Proxy")
         st.info("""
-            **Research Thesis:** Surface rainfall trends can serve as a predictive proxy for deep groundwater recharge. 
-            This hub correlates actual station trends with the nearest available rainfall gauge.
+            **Research Thesis:** Effective Recharge ($R_{eff} = Rainfall - ET$) is the primary driver of groundwater level changes. 
+            This hub correlates scientific recharge estimates against actual station trends.
         """)
         
-        with st.spinner("Linking geospatial proxies and calculating correlation indices..."):
+        with st.spinner("Linking geospatial proxies and calculating scientific recharge indices..."):
+            wapor_meta = data.fetch_wapor_metadata()
             df_research = data.fetch_research_data(df_active, window_days=window_days)
             
-            ui.render_research_metrics(df_research)
+            ui.render_research_metrics(df_research, wapor_meta=wapor_meta)
             ui.render_research_map(df_research)
             ui.render_research_table(df_research)
 

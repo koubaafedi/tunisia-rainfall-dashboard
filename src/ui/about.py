@@ -2,83 +2,69 @@ import streamlit as st
 from .. import config
 
 def render_about_page():
-    """Renders the comprehensive project and technical documentation page."""
+    """Renders the non-technical mission and overview page."""
     
     st.markdown("""
-        <div style='text-align: center; padding: 10px 0 30px 0;'>
-            <h1 style='margin: 0;'>📖 Information Hub</h1>
-            <p style='color: #666; font-size: 1.1rem;'>
-                Project Overview, Technical Architecture, and Data Transparency
+        <div style='text-align: center; padding: 20px 0 40px 0;'>
+            <h1 style='margin: 0; color: #2c3e50;'>🌊 Information Hub</h1>
+            <p style='color: #666; font-size: 1.2rem; font-weight: 300;'>
+                Ensuring Water Security through Science and Intelligence
             </p>
         </div>
     """, unsafe_allow_html=True)
 
-    col1, col2 = st.columns([2, 1])
+    col1, col2 = st.columns([1.5, 1])
 
     with col1:
-        with st.expander("🌟 Project Mission", expanded=True):
-            st.write("""
-                The **UK Groundwater Intelligence** platform is designed to provide real-time operational oversight 
-                of the national groundwater network. By bridging the gap between raw sensors and actionable 
-                intelligence, the dashboard enables stakeholders to monitor water level trends against 
-                dynamic historical benchmarks.
-                
-                **Key Objectives:**
-                - **Operational Visibility**: Real-time monitoring of 440+ stations across the UK.
-                - **Trend Intelligence**: Identification of rising or falling levels through automated delta analysis.
-                - **Data Integration**: Harmonizing disparate data sources from national monitoring bodies.
-            """)
+        st.markdown("### 🌟 Our Mission")
+        st.write("""
+            The **UK Groundwater Intelligence** project was founded with one primary objective: 
+            **to safeguard the nation's most precious hidden resource.**
+            
+            Groundwater is the invisible lifeline of our ecosystem, providing drinking water, 
+            supporting agriculture, and maintaining healthy river flows. This platform 
+            transforms complex geospatial data into a simple, clear window into the 
+            health of our aquifers.
+        """)
 
-        with st.expander("🔍 Data Architecture & Endpoints", expanded=True):
-            st.write(f"""
-                This platform utilizes the **Environment Agency's Open Data APIs** to aggregate real-time 
-                observations and historical snapshots.
-                
-                **Primary Endpoints:**
-                - **Hydrology API**: Used for comprehensive station metadata, aquifer classifications, and 
-                  historical records.
-                    - `Endpoint`: [{config.HYDRO_STATIONS_URL.split('?')[0]}](https://environment.data.gov.uk/hydrology/doc/reference)
-                - **Flood Monitoring API**: Used for real-time readings and measure definitions.
-                    - `Endpoint`: [{config.FLOOD_MEASURES_URL.split('?')[0]}](https://environment.data.gov.uk/flood-monitoring/doc/reference)
-                
-                **Integration Logic:**
-                The platform implements a **Multi-Key Matching Algorithm** that harmonizes `wiskiID`, 
-                `stationReference`, and `notation` formats to ensure 100% metadata coverage for live readings.
-            """)
-
-        with st.expander("⚙️ Technical Excellence"):
-            st.write("""
-                The dashboard has undergone a rigorous **Professional Refactoring** to meet enterprise 
-                standards for maintainability and scalability.
-                
-                **Architectural Features:**
-                - **Modular Design**: Separation of concerns across `src/data` (fetching/processing) and `src/ui` (rendering).
-                - **Resilience Patterns**: Automated fallback merging across APIs and standardized error handling.
-                - **High-Resolution Fetching**: Configured to retrieve 10,000+ records to ensure national network coverage.
-                - **Performance Optimization**: Efficient use of multi-layered caching (`@st.cache_data`) for metadata and snapshots.
-            """)
+        st.markdown("### 🧪 The Effective Recharge Approach")
+        st.write("""
+            Traditionally, monitoring focused solely on how much it rained. However, we know 
+            that rainfall is only half the story. To truly understand groundwater, we must 
+            account for **Evapotranspiration**—the water that returns to the atmosphere 
+            through heat and plant life.
+            
+            Our model uses the **Effective Recharge Index**, which scientifically calculates 
+            the water that actually reaches the deep groundwater layers. By subtracting 
+            satellite-derived evaporation from ground rainfall, we provide a far more 
+            accurate prediction of our future water security.
+        """)
 
     with col2:
         st.info("💡 **Did you know?**")
         st.write("""
-            The "Period Delta" compares the latest reading with a baseline from your selected window 
-            (e.g., 24h ago or 7 days ago). We apply a **2mm threshold** to filter out noise and 
-            highlight significant geophysical trends.
+            Over 30% of the UK’s public water supply comes from groundwater. In some regions 
+            like the South East, it accounts for nearly 100%. Monitoring these levels is 
+            not just data—it's disaster prevention.
         """)
         
-        st.success("🛰️ **Network Scope**")
+        st.success("🛰️ **Project Scope**")
         st.write("""
-            - **Stations**: 447 Active
-            - **Layers**: Chalk, Limestone, Mudstone, etc.
-            - **Coverage**: England & Wales
+            - **Stations**: 440+ Monitoring Points
+            - **Methodology**: FAO-Standard Hydraulic Balance
+            - **Goal**: Early Warning for Drought & Surplus
         """)
 
-        st.warning("⚖️ **Disclaimer**")
+        st.warning("⚖️ **Monitoring Integrity**")
         st.caption("""
-            Data is provided by the Environment Agency's Open Data services. While we strive for 
-            accuracy, this dashboard is for informational purposes and should be verified against 
-            official flood warnings for critical safety decisions.
+            This platform uses verified national monitoring data. While our predictive 
+            models are highly accurate, they are intended for strategic oversight. 
+            Always refer to local water authorities for operational decisions.
         """)
 
     st.markdown("---")
-    st.caption("Developed with ❤️ by the Advanced Agentic Coding Team | UK Groundwater Dashboard v2.1")
+    st.markdown("""
+        <div style='text-align: center; color: #999; font-size: 0.9rem;'>
+            Protecting the UK's Aquifers for Future Generations | v2.2 (Scientific Release)
+        </div>
+    """, unsafe_allow_html=True)

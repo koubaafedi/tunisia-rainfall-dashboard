@@ -4,7 +4,7 @@ from streamlit_folium import st_folium
 import pandas as pd
 from .. import config
 
-def render_research_metrics(df: pd.DataFrame):
+def render_research_metrics(df: pd.DataFrame, wapor_meta: dict = None):
     """Displays analytical metrics for the proxy index research."""
     if df.empty: return
     
@@ -17,16 +17,34 @@ def render_research_metrics(df: pd.DataFrame):
     total_count = len(valid)
     accuracy = (correct_count / total_count) * 100
     
+    # Showcase WaPOR context in sidebar if available
+    if wapor_meta:
+        with st.sidebar:
+            st.divider()
+            st.markdown(f"### 🛰️ FAO WaPOR Context")
+            st.info(f"**Latest Dekad:** {wapor_meta.get('dekad_code')}\n\n**Data:** {wapor_meta.get('caption')}")
+            st.caption(f"Last API Probe: {wapor_meta.get('last_updated')}")
+
     c1, c2, c3 = st.columns(3)
-    c1.metric("🎯 Proxy Accuracy", f"{accuracy:.1f}%", help="Percentage of stations where Rainfall trend matches GW trend.")
+    c1.metric("🎯 Prediction Accuracy", f"{accuracy:.1f}%", help="Percentage of stations where Effective Recharge (R_eff) trend matches Ground Truth.")
     c2.metric("🛰️ Linked Gauges", f"{df['rain_ref'].nunique()} unique", help="Number of distinct rainfall stations linked as proxies.")
-    c3.metric("📏 Avg Link Distance", f"{df['rain_dist_km'].mean():.2f} km", help="Average distance between groundwater well and linked rainfall gauge.")
+    c3.metric("📏 Avg Subtraction (ET)", f"{df['et_applied'].mean():.1f} mm", help=f"Source: {df['et_source'].iloc[0] if 'et_source' in df.columns else 'Baseline'}")
 
 def _get_proxy_popup(row: pd.Series) -> str:
     """HTML for research popup comparing ground truth vs proxy."""
     gw_trend = row.get('trend_label', 'Stable')
     px_trend = row.get('proxy_trend', 'N/A')
     match = row.get('proxy_match', 'N/A')
+    
+    # Metrics (Handle potential NaN/Missing values)
+    rain_val = row.get('rain_latest_val')
+    et_val = row.get('et_applied', 0.0)
+    reff_val = row.get('reff_val')
+    
+    # Pre-format for HTML display
+    fmt_rain = f"{rain_val:.1f}" if pd.notna(rain_val) else "N/A"
+    fmt_et = f"{et_val:.1f}" if pd.notna(et_val) else "0.0"
+    fmt_reff = f"{reff_val:.1f}" if pd.notna(reff_val) else "N/A"
     
     color_map = {"Rising": config.THEME_COLORS["rising"], "Falling": config.THEME_COLORS["falling"], "Stable": config.THEME_COLORS["stable"], "N/A": "#aaa"}
     match_color = "#2ecc71" if match == "Correct" else ("#e74c3c" if match == "Incorrect" else "#aaa")
@@ -39,14 +57,19 @@ def _get_proxy_popup(row: pd.Series) -> str:
         
         <table style="width:100%; border-collapse: collapse;">
             <tr>
-                <td style="font-size:11px; color:#888;">Ground Truth:</td>
+                <td style="font-size:11px; color:#888;">Actual Trend (GW):</td>
                 <td style="font-size:12px; font-weight:700; color:{color_map.get(gw_trend)}">{gw_trend}</td>
             </tr>
             <tr>
-                <td style="font-size:11px; color:#888;">Proxy (Rain):</td>
+                <td style="font-size:11px; color:#888;">Predicted Trend:</td>
                 <td style="font-size:12px; font-weight:700; color:{color_map.get(px_trend)}">{px_trend}</td>
             </tr>
         </table>
+        
+        <div style="margin: 5px 0; font-size:10px; color:#555; background:#f8f9fa; padding: 5px; border-radius:4px;">
+            <b>Hydraulic Balance:</b><br>
+            Rain ({fmt_rain}mm) - ET ({fmt_et}mm) = <b>Recharge: {fmt_reff}mm</b>
+        </div>
         
         <div style="margin-top:10px; padding: 8px; border-radius: 8px; background: {match_color}22; border: 1px solid {match_color}; text-align:center;">
              <span style="color:{match_color}; font-weight:700; font-size:12px;">Predection: {match}</span>
@@ -85,15 +108,25 @@ def render_research_map(df: pd.DataFrame):
 def render_research_table(df: pd.DataFrame):
     """Shows raw proxy comparison data."""
     st.subheader("📋 Proxy Comparison Dataset")
+    st.caption("Detailed breakdown of the scientific hydraulic balance for each linked station.")
     
-    cols = ['station_label', 'trend_label', 'proxy_trend', 'proxy_match', 'rain_label', 'rain_dist_km']
+    cols = [
+        'station_label', 'trend_label', 'proxy_trend', 'proxy_match', 
+        'rain_latest_val', 'et_applied', 'reff_val', 'rain_label', 'rain_dist_km'
+    ]
     fmt_df = df[[c for c in cols if c in df.columns]].copy()
+    
+    # Clean renaming for user clarity
     fmt_df = fmt_df.rename(columns={
+        'station_label': 'GW Station',
         'trend_label': 'Actual Trend (GW)',
-        'proxy_trend': 'Predicted (Rainfall)',
-        'proxy_match': 'Accuracy',
+        'proxy_trend': 'Predicted Trend (Reff)',
+        'proxy_match': 'Accuracy Status',
+        'rain_latest_val': 'Rainfall (mm)',
+        'et_applied': 'ET Subtracted (mm)',
+        'reff_val': 'Effective Recharge (mm)',
         'rain_label': 'Linked Gauge',
         'rain_dist_km': 'Dist (km)'
     })
     
-    st.dataframe(fmt_df, use_container_width=True)
+    st.dataframe(fmt_df, width='stretch', hide_index=True)
