@@ -12,7 +12,10 @@ from .. import config
 
 logger = logging.getLogger(__name__)
 
-# Removed pywapor dependency as requested. Pivoted to EA PET Dataset (2025).
+# Constants for Hydrological Calibration
+KC_FACTOR = 0.65       # Land Cover Coefficient (Potential ET -> Actual ET)
+LAG_DAYS = 14          # Default geological lag for groundwater response
+RAIN_COEFF = 1.0       # Calibration factor for rainfall volume
 
 def haversine(lat1, lon1, lat2, lon2):
     """Calculates the great-circle distance between two points in kilometers."""
@@ -27,9 +30,9 @@ def haversine(lat1, lon1, lat2, lon2):
 def fetch_ea_pet_metadata() -> Dict[str, str]:
     """Provides metadata about the scientific PET dataset."""
     return {
-        'dekad_code': 'EA PET 2025',
-        'caption': 'Environment Agency Potential ET (1km Grid)',
-        'last_updated': '2026-02-02'
+        'dekad_code': 'EA PET 2025 (Calibrated)',
+        'caption': f'EA 1km Grid | Kc={KC_FACTOR} | Lag={LAG_DAYS}d',
+        'last_updated': datetime.utcnow().strftime('%Y-%m-%d')
     }
 
 @st.cache_data(ttl=config.DEFAULT_CACHE_TTL_METADATA)
@@ -38,17 +41,17 @@ def get_station_specific_et(station_ref: str, month: int) -> float:
     try:
         csv_path = os.path.join("src", "data", "station_pet_averages.csv")
         if not os.path.exists(csv_path):
-            return 45.0 # Fallback to UK national average (Monthly total)
+            return 45.0
             
         df = pd.read_csv(csv_path)
         match = df[(df['stationReference'] == str(station_ref).upper()) & (df['month'] == month)]
         if not match.empty:
-            # avg_daily_pet is mm/day
-            return float(match['avg_daily_pet'].iloc[0]) * 30.0 # Monthly total
+            # Result is mm/day (multiplied by Kc to represent Actual ET)
+            return float(match['avg_daily_pet'].iloc[0]) * KC_FACTOR * 30.0
     except Exception as e:
         logger.warning(f"PET Lookup failed for {station_ref}: {e}")
         
-    return 45.0 # Scientific monthly average fallback (MORECS baseline approx)
+    return 45.0 * KC_FACTOR 
 
 @st.cache_data(ttl=config.DEFAULT_CACHE_TTL_METADATA)
 def fetch_rainfall_metadata() -> pd.DataFrame:
@@ -100,50 +103,59 @@ def link_stations_geospatially(gw_df: pd.DataFrame, max_dist_km: float = 15.0) -
 
 @st.cache_data(ttl=config.DEFAULT_CACHE_TTL_READINGS)
 def fetch_rainfall_readings(rain_refs: List[str], window_days: int) -> pd.DataFrame:
-    """Fetches rainfall totals using a high-coverage threaded strategy."""
+    """Fetches accumulated rainfall totals over specified windows (Latest vs. Hist) with lag."""
     if not rain_refs: return pd.DataFrame()
     target_refs = list(set(str(r) for r in rain_refs if r))
-    hist_date = (datetime.utcnow() - timedelta(days=window_days)).strftime('%Y-%m-%d')
+    
+    # Define lagged windows
+    # Window 1 (Current Proxy): Lag to Lag+Window
+    since_latest = (datetime.utcnow() - timedelta(days=LAG_DAYS + window_days)).strftime('%Y-%m-%d')
+    until_latest = (datetime.utcnow() - timedelta(days=LAG_DAYS)).strftime('%Y-%m-%d')
+    
+    # Window 2 (Hist Proxy): Lag+Window to Lag+2*Window
+    since_hist = (datetime.utcnow() - timedelta(days=LAG_DAYS + 2*window_days)).strftime('%Y-%m-%d')
+    until_hist = (datetime.utcnow() - timedelta(days=LAG_DAYS + window_days)).strftime('%Y-%m-%d')
 
     try:
-        # 1. Map stationRefs to Measure URLs (Batch metadata - Reliable)
+        # 1. Map stationRefs to Measure URLs
         url_m = "https://environment.data.gov.uk/flood-monitoring/id/measures?parameter=rainfall&_limit=10000"
         resp = requests.get(url_m, timeout=25)
         if resp.status_code != 200: return pd.DataFrame()
         
         items = resp.json().get('items', [])
-        ref_to_measure = {}
-        for it in items:
-            ref = it.get('stationReference') or (it['station'].split('/')[-1] if 'station' in it else None)
-            if ref and str(ref) in target_refs:
-                ref_to_measure[str(ref)] = it.get('@id')
+        ref_to_measure = {str(i.get('stationReference')): i.get('@id') for i in items if i.get('stationReference')}
         
-        # 2. Threaded Fetch for Latest AND Historical readings
-        def _fetch_pair(ref):
+        def _fetch_accumulated(ref):
             m_url = ref_to_measure.get(ref)
             if not m_url: return None
             res = {'rain_ref': ref}
             try:
-                # Latest
-                rl = requests.get(f"{m_url}/readings?latest", timeout=8)
+                # Accumulate Latest Window
+                rl = requests.get(f"{m_url}/readings?since={since_latest}&until={until_latest}&_limit=10000", timeout=12)
                 if rl.status_code == 200:
-                    l_items = rl.json().get('items', [])
-                    if l_items: res['rain_latest_val'] = float(l_items[0]['value'])
-                # History
-                rh = requests.get(f"{m_url}/readings?date={hist_date}&_limit=1", timeout=8)
-                if rh.status_code == 200:
-                    h_items = rh.json().get('items', [])
-                    if h_items: res['rain_hist_val'] = float(h_items[0]['value'])
-            except: pass
-            return res if 'rain_latest_val' in res else None
+                    l_it = rl.json().get('items', [])
+                    res['rain_latest_val'] = sum(float(i['value']) for i in l_it if 'value' in i)
+                else: res['rain_latest_val'] = 0.0
 
-        with ThreadPoolExecutor(max_workers=25) as executor:
-            combined_results = list(executor.map(_fetch_pair, list(ref_to_measure.keys())))
+                # Accumulate Hist Window
+                rh = requests.get(f"{m_url}/readings?since={since_hist}&until={until_hist}&_limit=10000", timeout=12)
+                if rh.status_code == 200:
+                    h_it = rh.json().get('items', [])
+                    res['rain_hist_val'] = sum(float(i['value']) for i in h_it if 'value' in i)
+                else: res['rain_hist_val'] = 0.0
+                
+                return res
+            except: 
+                return None
+
+        # Threaded fetch for all proxy gauges
+        with ThreadPoolExecutor(max_workers=30) as executor:
+            combined = list(executor.map(_fetch_accumulated, [r for r in target_refs if r in ref_to_measure]))
         
-        results = [r for r in combined_results if r]
+        results = [r for r in combined if r]
         if results:
             final = pd.DataFrame(results)
-            logger.warning(f"Rainfall Pipeline: Coverage {len(final)}/{len(target_refs)} gauges.")
+            logger.info(f"Rainfall Pipeline: Accumulated {len(final)} gauges using {LAG_DAYS}d lag.")
             return final
             
     except Exception as e:
@@ -152,10 +164,9 @@ def fetch_rainfall_readings(rain_refs: List[str], window_days: int) -> pd.DataFr
     return pd.DataFrame()
 
 def fetch_research_data(gw_df: pd.DataFrame, window_days: int) -> pd.DataFrame:
-    """Orchestrates the linking and proxy calculation for the research hub."""
+    """Orchestrates the linking and proxy calculation for the research hub with hydrological calibration."""
     if gw_df.empty: return gw_df
     
-    # Initialize basic res to guarantee structure
     res = gw_df.copy()
     for col in ['proxy_trend', 'proxy_match', 'rain_ref', 'rain_label', 'rain_dist_km', 'reff_val', 'et_applied']:
         if col not in res.columns:
@@ -167,30 +178,29 @@ def fetch_research_data(gw_df: pd.DataFrame, window_days: int) -> pd.DataFrame:
         if 'rain_ref' not in linked.columns: return res
         
         active_rain_refs = linked['rain_ref'].dropna().unique().tolist()
-        if not active_rain_refs: 
-            return linked.assign(proxy_trend="N/A", proxy_match="N/A", reff_val=np.nan, et_applied=np.nan)
+        if not active_rain_refs: return linked
             
-        # 2. Rainfall Fetch
+        # 2. Accumulated Rainfall Fetch with Lag
         rain_readings = fetch_rainfall_readings(active_rain_refs, window_days)
-        if rain_readings.empty: 
-            return linked.assign(proxy_trend="N/A", proxy_match="N/A", reff_val=np.nan, et_applied=np.nan)
+        if rain_readings.empty: return linked
         
-        # 3. Scientific Calibration
+        # 3. Scientific Calibration (AET = PET * Kc)
         current_month = datetime.utcnow().month
         calibrated = pd.merge(linked, rain_readings, on='rain_ref', how='left')
-        calibrated['et_source'] = "EA Potential ET (2025 Grid)"
+        calibrated['et_source'] = f"EA Calibrated (Kc={KC_FACTOR}, Lag={LAG_DAYS}d)"
         
         def _calc_recharge_proxy(row):
             lv, hv = row.get('rain_latest_val'), row.get('rain_hist_val')
             if pd.isna(lv) or pd.isna(hv): return "N/A", np.nan
             
             s_ref = row.get('stationReference')
+            # get_station_specific_et now includes KC_FACTOR already
             et_total = get_station_specific_et(s_ref, current_month)
             et_scaled = (et_total / 30.0) * window_days
             
-            # Reff = Max(0, Rain - ET)
-            reff_latest = max(0.0, lv - et_scaled)
-            reff_hist = max(0.0, hv - et_scaled)
+            # Reff = Max(0, (Rain * Coeff) - AET)
+            reff_latest = max(0.0, (lv * RAIN_COEFF) - et_scaled)
+            reff_hist = max(0.0, (hv * RAIN_COEFF) - et_scaled)
             
             if reff_latest > reff_hist: return "Rising", reff_latest
             if reff_latest < reff_hist: return "Falling", reff_latest
@@ -203,8 +213,7 @@ def fetch_research_data(gw_df: pd.DataFrame, window_days: int) -> pd.DataFrame:
             if lv < hv: return "Falling"
             return "Stable"
 
-        # Apply scientific model
-        calibrated['proxy_trend_basic'] = calibrated.apply(_get_trend_str, axis=1)
+        # Apply Model
         recharge_results = calibrated.apply(_calc_recharge_proxy, axis=1)
         calibrated['proxy_trend'] = recharge_results.apply(lambda x: x[0])
         calibrated['reff_val'] = recharge_results.apply(lambda x: x[1])
@@ -218,7 +227,7 @@ def fetch_research_data(gw_df: pd.DataFrame, window_days: int) -> pd.DataFrame:
             
         calibrated['proxy_match'] = calibrated.apply(_check_accuracy, axis=1)
         
-        # Stabilization: Ensure numeric columns are strictly numeric for Arrow
+        # Stabilization
         numeric_cols = ['rain_latest_val', 'rain_hist_val', 'reff_val', 'et_applied', 'rain_dist_km']
         for col in numeric_cols:
             if col in calibrated.columns:
@@ -227,6 +236,5 @@ def fetch_research_data(gw_df: pd.DataFrame, window_days: int) -> pd.DataFrame:
         return calibrated
 
     except Exception as e:
-        logger.error(f"Research Data Orchestration Failed: {e}")
-        # Always return the initialized 'res' which has the required columns
+        logger.error(f"Research Calibration Failed: {e}")
         return res
