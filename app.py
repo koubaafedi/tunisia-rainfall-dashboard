@@ -79,10 +79,12 @@ if not df_all.empty:
     """, unsafe_allow_html=True)
     
     # Dashboard Navigation
-    tab_map, tab_analytics, tab_raw = st.tabs([
+    tab_map, tab_analytics, tab_raw, tab_about, tab_research = st.tabs([
         "🗺️ Network Map", 
         "📊 Trends & Records", 
-        "💾 Data Center"
+        "💾 Data Center",
+        "📖 Info Hub",
+        "🧪 Research Hub"
     ])
     
     with tab_map:
@@ -123,6 +125,23 @@ if not df_all.empty:
     with tab_raw:
         st.subheader("💾 Exportable Dataset")
         ui.render_data_table(df_active)
+
+    with tab_about:
+        ui.render_about_page()
+
+    with tab_research:
+        st.subheader("🧪 Ground Truth vs. Rainfall Proxy Research")
+        st.info("""
+            **Research Thesis:** Surface rainfall trends can serve as a predictive proxy for deep groundwater recharge. 
+            This hub correlates actual station trends with the nearest available rainfall gauge.
+        """)
+        
+        with st.spinner("Linking geospatial proxies and calculating correlation indices..."):
+            df_research = data.fetch_research_data(df_active, window_days=window_days)
+            
+            ui.render_research_metrics(df_research)
+            ui.render_research_map(df_research)
+            ui.render_research_table(df_research)
 
 else:
     st.error("Platform Data Link Severed. Please check API connectivity or refresh.")
