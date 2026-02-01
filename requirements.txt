@@ -4,5 +4,7 @@ requests
 folium
 streamlit-folium
 altair
-pywapor
 xarray
+netCDF4
+pyproj
+numpy

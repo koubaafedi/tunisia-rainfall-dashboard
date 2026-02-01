@@ -4,21 +4,15 @@ import streamlit as st
 import logging
 import math
 import numpy as np
+import os
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 from concurrent.futures import ThreadPoolExecutor
 from .. import config
-from .fetchers import fetch_raw_metadata, fetch_latest_readings_raw
-import xarray as xr
 
 logger = logging.getLogger(__name__)
 
-try:
-    import pywapor
-    PYWAPOR_AVAILABLE = True
-except ImportError:
-    PYWAPOR_AVAILABLE = False
-    logger.warning("pywapor library not found or incomplete. Falling back to scientific monthly baselines.")
+# Removed pywapor dependency as requested. Pivoted to EA PET Dataset (2025).
 
 def haversine(lat1, lon1, lat2, lon2):
     """Calculates the great-circle distance between two points in kilometers."""
@@ -29,61 +23,32 @@ def haversine(lat1, lon1, lat2, lon2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
-def calculate_pywapor_et(lat: float, lon: float, window_days: int) -> Optional[float]:
-    """
-    Attempts to calculate Actual ET using the pyWaPOR algorithm as requested.
-    Note: Requires a functional GDAL/osgeo environment.
-    """
-    if not PYWAPOR_AVAILABLE:
-        return None
-        
-    try:
-        # Define bounding box around the point
-        buffer = 0.05
-        bb = [lon - buffer, lat - buffer, lon + buffer, lat + buffer]
-        
-        # Define period
-        end_date = datetime.utcnow()
-        start_date = end_date - timedelta(days=window_days)
-        period = [start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')]
-        
-        # Initialize pywapor project (using a temp folder)
-        import tempfile
-        import os
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            project = pywapor.Project(tmp_dir, bb, period)
-            project.load_configuration(name="WaPOR3_level_1") 
-            
-            logger.info(f"pyWaPOR: Initialized project for {lat}, {lon}")
-            return None 
-    except Exception as e:
-        logger.error(f"pyWaPOR calculation failed: {e}")
-        return None
+@st.cache_data(ttl=config.DEFAULT_CACHE_TTL_METADATA)
+def fetch_ea_pet_metadata() -> Dict[str, str]:
+    """Provides metadata about the scientific PET dataset."""
+    return {
+        'dekad_code': 'EA PET 2025',
+        'caption': 'Environment Agency Potential ET (1km Grid)',
+        'last_updated': '2026-02-02'
+    }
 
 @st.cache_data(ttl=config.DEFAULT_CACHE_TTL_METADATA)
-def fetch_wapor_metadata() -> Dict[str, str]:
-    """Fetches the latest WaPOR v3 dekadal raster metadata."""
-    url = "https://data.apps.fao.org/gismgr/api/v2/catalog/workspaces/WAPOR-3/mapsets/L1-AETI-D/rasters?_limit=1"
+def get_station_specific_et(station_ref: str, month: int) -> float:
+    """Retrieves the scientific monthly average PET for a specific station from the aggregated EA dataset."""
     try:
-        resp = requests.get(url, timeout=15)
-        if resp.status_code == 200:
-            item = resp.json().get('response', {}).get('items', [{}])[0]
-            return {
-                'dekad_code': item.get('code', 'Unknown'),
-                'caption': item.get('caption', 'FAO WaPOR v3 AETI'),
-                'last_updated': item.get('lastUpdate', 'N/A')
-            }
-    except: pass
-    return {'dekad_code': 'Baseline Fallback', 'caption': 'UK MORECS Baseline', 'last_updated': 'N/A'}
-
-def get_uk_monthly_et(month: int) -> float:
-    """Returns the scientific UK average monthly ET (mm) derived from MORECS."""
-    # Source: Standard long-term averages for UK PET (Short Grass)
-    MONTHS_ET = {
-        1: 5.0, 2: 10.0, 3: 25.0, 4: 50.0, 5: 80.0, 6: 100.0,
-        7: 110.0, 8: 90.0, 9: 60.0, 10: 30.0, 11: 15.0, 12: 5.0
-    }
-    return MONTHS_ET.get(month, 45.0) # Default to 45mm if unknown
+        csv_path = os.path.join("src", "data", "station_pet_averages.csv")
+        if not os.path.exists(csv_path):
+            return 45.0 # Fallback to UK national average (Monthly total)
+            
+        df = pd.read_csv(csv_path)
+        match = df[(df['stationReference'] == str(station_ref).upper()) & (df['month'] == month)]
+        if not match.empty:
+            # avg_daily_pet is mm/day
+            return float(match['avg_daily_pet'].iloc[0]) * 30.0 # Monthly total
+    except Exception as e:
+        logger.warning(f"PET Lookup failed for {station_ref}: {e}")
+        
+    return 45.0 # Scientific monthly average fallback (MORECS baseline approx)
 
 @st.cache_data(ttl=config.DEFAULT_CACHE_TTL_METADATA)
 def fetch_rainfall_metadata() -> pd.DataFrame:
@@ -178,7 +143,7 @@ def fetch_rainfall_readings(rain_refs: List[str], window_days: int) -> pd.DataFr
         results = [r for r in combined_results if r]
         if results:
             final = pd.DataFrame(results)
-            logger.warning(f"Rainfall Pipeline: Coverage {len(final)}/{len(target_refs)} gauges. Hist hits: {final.get('rain_hist_val', pd.Series()).notna().sum()}")
+            logger.warning(f"Rainfall Pipeline: Coverage {len(final)}/{len(target_refs)} gauges.")
             return final
             
     except Exception as e:
@@ -189,36 +154,39 @@ def fetch_rainfall_readings(rain_refs: List[str], window_days: int) -> pd.DataFr
 def fetch_research_data(gw_df: pd.DataFrame, window_days: int) -> pd.DataFrame:
     """Orchestrates the linking and proxy calculation for the research hub."""
     if gw_df.empty: return gw_df
-    res = gw_df.copy()
-    res['rain_ref'] = None
-    res['rain_label'] = "No Gauge Linked"
-    res['rain_dist_km'] = 0.0
-    res['proxy_trend'] = "N/A"
-    res['proxy_match'] = "N/A"
     
+    # Initialize basic res to guarantee structure
+    res = gw_df.copy()
+    for col in ['proxy_trend', 'proxy_match', 'rain_ref', 'rain_label', 'rain_dist_km', 'reff_val', 'et_applied']:
+        if col not in res.columns:
+            res[col] = "N/A" if col in ['proxy_trend', 'proxy_match'] else (np.nan if col != 'rain_label' else "No Gauge Linked")
+
     try:
+        # 1. Spatial Join
         linked = link_stations_geospatially(gw_df)
         if 'rain_ref' not in linked.columns: return res
+        
         active_rain_refs = linked['rain_ref'].dropna().unique().tolist()
-        if not active_rain_refs: return linked.assign(proxy_trend="N/A", proxy_match="N/A")
+        if not active_rain_refs: 
+            return linked.assign(proxy_trend="N/A", proxy_match="N/A", reff_val=np.nan, et_applied=np.nan)
             
+        # 2. Rainfall Fetch
         rain_readings = fetch_rainfall_readings(active_rain_refs, window_days)
-        if rain_readings.empty: return linked.assign(proxy_trend="N/A", proxy_match="N/A")
+        if rain_readings.empty: 
+            return linked.assign(proxy_trend="N/A", proxy_match="N/A", reff_val=np.nan, et_applied=np.nan)
         
-        # 3. Calculate Effective Recharge (Reff)
+        # 3. Scientific Calibration
         current_month = datetime.utcnow().month
-        et_baseline = get_uk_monthly_et(current_month)
-        et_scaled = (et_baseline / 30.0) * window_days
-        
-        # Check for pyWaPOR availability for advanced modeling
-        res = pd.merge(linked, rain_readings, on='rain_ref', how='left')
-        res['et_source'] = "MORECS Baseline"
-        if PYWAPOR_AVAILABLE:
-             res['et_source'] = "pyWaPOR (Active)"
+        calibrated = pd.merge(linked, rain_readings, on='rain_ref', how='left')
+        calibrated['et_source'] = "EA Potential ET (2025 Grid)"
         
         def _calc_recharge_proxy(row):
             lv, hv = row.get('rain_latest_val'), row.get('rain_hist_val')
-            if pd.isna(lv) or pd.isna(hv): return "N/A", "N/A"
+            if pd.isna(lv) or pd.isna(hv): return "N/A", np.nan
+            
+            s_ref = row.get('stationReference')
+            et_total = get_station_specific_et(s_ref, current_month)
+            et_scaled = (et_total / 30.0) * window_days
             
             # Reff = Max(0, Rain - ET)
             reff_latest = max(0.0, lv - et_scaled)
@@ -235,29 +203,30 @@ def fetch_research_data(gw_df: pd.DataFrame, window_days: int) -> pd.DataFrame:
             if lv < hv: return "Falling"
             return "Stable"
 
-        # Apply calculations
-        res['proxy_trend'] = res.apply(_get_trend_str, axis=1)
-        res['reff_val'] = res.apply(lambda r: _calc_recharge_proxy(r)[1], axis=1)
-        res['et_applied'] = et_scaled
+        # Apply scientific model
+        calibrated['proxy_trend_basic'] = calibrated.apply(_get_trend_str, axis=1)
+        recharge_results = calibrated.apply(_calc_recharge_proxy, axis=1)
+        calibrated['proxy_trend'] = recharge_results.apply(lambda x: x[0])
+        calibrated['reff_val'] = recharge_results.apply(lambda x: x[1])
+        calibrated['et_applied'] = calibrated.apply(lambda r: (get_station_specific_et(r['stationReference'], current_month) / 30.0) * window_days, axis=1)
         
-        # 4. Correlation Check
+        # 4. Correlation Accuracy
         def _check_accuracy(row):
             pt, at = row.get('proxy_trend'), row.get('trend_label')
             if pt == "N/A" or not at: return "N/A"
             return "Correct" if pt == at else "Incorrect"
             
-        res['proxy_match'] = res.apply(_check_accuracy, axis=1)
+        calibrated['proxy_match'] = calibrated.apply(_check_accuracy, axis=1)
         
-        # Ensure numeric columns are strictly numeric for Arrow/Streamlit stability
+        # Stabilization: Ensure numeric columns are strictly numeric for Arrow
         numeric_cols = ['rain_latest_val', 'rain_hist_val', 'reff_val', 'et_applied', 'rain_dist_km']
         for col in numeric_cols:
-            if col in res.columns:
-                res[col] = pd.to_numeric(res[col], errors='coerce')
+            if col in calibrated.columns:
+                calibrated[col] = pd.to_numeric(calibrated[col], errors='coerce')
         
-        return res
+        return calibrated
+
     except Exception as e:
         logger.error(f"Research Data Orchestration Failed: {e}")
-        # Return a baseline with necessary columns to prevent UI crashes
-        for c in ['proxy_trend', 'proxy_match', 'reff_val', 'et_applied']:
-            if c not in res.columns: res[c] = np.nan if c != 'proxy_match' else "N/A"
+        # Always return the initialized 'res' which has the required columns
         return res

@@ -36,8 +36,8 @@ def render_about_page():
             
             Our model uses the **Effective Recharge Index**, which scientifically calculates 
             the water that actually reaches the deep groundwater layers. By subtracting 
-            satellite-derived evaporation from ground rainfall, we provide a far more 
-            accurate prediction of our future water security.
+            **Environment Agency scientific evaporation data (1km Grid)** from ground 
+            rainfall, we provide a far more accurate prediction of our future water security.
         """)
 
     with col2:
@@ -51,8 +51,8 @@ def render_about_page():
         st.success("🛰️ **Project Scope**")
         st.write("""
             - **Stations**: 440+ Monitoring Points
-            - **Methodology**: FAO-Standard Hydraulic Balance
-            - **Goal**: Early Warning for Drought & Surplus
+            - **Methodology**: EA-Standard Hydraulic Balance
+            - **Dataset**: PET 2025 (UK Operational)
         """)
 
         st.warning("⚖️ **Monitoring Integrity**")

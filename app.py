@@ -137,10 +137,10 @@ if not df_all.empty:
         """)
         
         with st.spinner("Linking geospatial proxies and calculating scientific recharge indices..."):
-            wapor_meta = data.fetch_wapor_metadata()
+            pet_meta = data.fetch_ea_pet_metadata()
             df_research = data.fetch_research_data(df_active, window_days=window_days)
             
-            ui.render_research_metrics(df_research, wapor_meta=wapor_meta)
+            ui.render_research_metrics(df_research, wapor_meta=pet_meta)
             ui.render_research_map(df_research)
             ui.render_research_table(df_research)
 

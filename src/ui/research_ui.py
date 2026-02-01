@@ -17,13 +17,13 @@ def render_research_metrics(df: pd.DataFrame, wapor_meta: dict = None):
     total_count = len(valid)
     accuracy = (correct_count / total_count) * 100
     
-    # Showcase WaPOR context in sidebar if available
+    # Showcase PET context in sidebar if available
     if wapor_meta:
         with st.sidebar:
             st.divider()
-            st.markdown(f"### 🛰️ FAO WaPOR Context")
-            st.info(f"**Latest Dekad:** {wapor_meta.get('dekad_code')}\n\n**Data:** {wapor_meta.get('caption')}")
-            st.caption(f"Last API Probe: {wapor_meta.get('last_updated')}")
+            st.markdown(f"### 🧪 Scientific PET Context")
+            st.info(f"**Source:** {wapor_meta.get('dekad_code')}\n\n**Method:** {wapor_meta.get('caption')}")
+            st.caption(f"Dataset Version: {wapor_meta.get('last_updated')}")
 
     c1, c2, c3 = st.columns(3)
     c1.metric("🎯 Prediction Accuracy", f"{accuracy:.1f}%", help="Percentage of stations where Effective Recharge (R_eff) trend matches Ground Truth.")
