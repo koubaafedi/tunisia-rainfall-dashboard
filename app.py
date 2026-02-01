@@ -14,12 +14,15 @@ st.sidebar.markdown("---")
 st.sidebar.header("🔍 Filters")
 
 # --- DATA LOADING ---
-param_type = "level"
-title_prefix = "Groundwater"
-color_scheme = "blues"
-page = "💧 Groundwater Levels"
+if 'main_df' not in st.session_state:
+    st.session_state.main_df = data.fetch_uk_data()
 
-df = data.fetch_uk_data(param_type=param_type)
+df = st.session_state.main_df
+
+if st.sidebar.button("🔄 Refresh Data"):
+    with st.spinner("Refreshing national data..."):
+        st.session_state.main_df = data.fetch_uk_data()
+        st.rerun()
 
 if not df.empty:
     # FILTERS
@@ -32,8 +35,8 @@ if not df.empty:
     # --- RENDER HEADER ---
     st.markdown(f"""
         <div style='text-align: center; padding: 10px 0 30px 0;'>
-            <h1 style='margin: 0;'>{page}</h1>
-            <p style='color: #666; font-size: 1.1rem;'>National overview of {title_prefix.lower()} monitoring stations</p>
+            <h1 style='margin: 0;'>💧 UK Groundwater Levels</h1>
+            <p style='color: #666; font-size: 1.1rem;'>National monitoring overview of aquifer health</p>
         </div>
     """, unsafe_allow_html=True)
     
@@ -45,30 +48,34 @@ if not df.empty:
         ui.render_map(df_filtered)
 
     with tab_charts:
-        st.subheader(f"📊 {title_prefix} Distribution")
-        
-        # Aggregate view
+        st.subheader("📊 Distribution by Aquifer")
         ui.render_charts(df_filtered)
         
         st.markdown("---")
-        # Individual Station History
-        st.subheader("🧐 Individual Station Analysis")
-        selected_station_label = st.selectbox(
-            "Select a station to view historical data (7 Days)",
-            options=sorted(df_filtered['station_label'].unique()),
-            index=0 if not df_filtered.empty else None
-        )
         
-        if selected_station_label:
-            station_row = df_filtered[df_filtered['station_label'] == selected_station_label].iloc[0]
-            st_ref = station_row.get('stationReference')
-            cf = station_row.get('conv_factor', 1.0)
-            if st_ref:
-                with st.spinner(f"Fetching history for {selected_station_label}..."):
-                    df_hist = data.fetch_station_history(st_ref, conv_factor=cf)
-                    ui.render_station_history(df_hist, selected_station_label)
-            else:
-                st.warning("This station does not support historical readings via this ID.")
+        # We wrap this in a fragment if available (Streamlit 1.33+)
+        # This isolates the spinner and chart updates so they don't grey out the map Tab
+        @st.fragment
+        def render_analysis_section(dff):
+            st.subheader("🧐 Individual Station Analysis")
+            sel_label = st.selectbox(
+                "Select a station to view historical data (7 Days)",
+                options=sorted(dff['station_label'].unique()),
+                key="station_selector"
+            )
+            
+            if sel_label:
+                row = dff[dff['station_label'] == sel_label].iloc[0]
+                st_ref = row.get('stationReference')
+                cf = row.get('conv_factor', 1.0)
+                if st_ref:
+                    with st.spinner(f"Loading history for {sel_label}..."):
+                        df_h = data.fetch_station_history(st_ref, conv_factor=cf)
+                        ui.render_station_history(df_h, sel_label)
+                else:
+                    st.warning("Historical data reference unavailable.")
+
+        render_analysis_section(df_filtered)
 
     with tab_data:
         st.subheader("💾 Raw Station Data")

@@ -163,7 +163,7 @@ def render_map(df):
             tooltip=row['station_label']
         ).add_to(m)
 
-    st_folium(m, width=None, height=600)
+    st_folium(m, width=None, height=600, returned_objects=[], key="main_map")
 
 def render_charts(df):
     if df.empty or 'grouping' not in df.columns:
