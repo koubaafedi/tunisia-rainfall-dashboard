@@ -8,26 +8,22 @@ ui.apply_custom_css()
 
 # --- SIDEBAR NAVIGATION ---
 st.sidebar.title("🇬🇧 UK Monitoring")
-page = st.sidebar.radio("📁 Select Parameter", ["💧 Groundwater Levels", "🌧️ Rainfall Monitoring"])
+st.sidebar.info("Focus: National Groundwater Monitoring")
 
 st.sidebar.markdown("---")
 st.sidebar.header("🔍 Filters")
 
 # --- DATA LOADING ---
-if "Groundwater" in page:
-    param_type = "level"
-    title_prefix = "Groundwater"
-    color_scheme = "blues"
-else:
-    param_type = "rainfall"
-    title_prefix = "Rainfall"
-    color_scheme = "purples"
+param_type = "level"
+title_prefix = "Groundwater"
+color_scheme = "blues"
+page = "💧 Groundwater Levels"
 
 df = data.fetch_uk_data(param_type=param_type)
 
 if not df.empty:
     # FILTERS
-    group_label = "💎 Aquifer Layer" if param_type == "level" else "📍 Town / Location"
+    group_label = "💎 Aquifer Layer"
     all_groups = sorted(df['grouping'].dropna().unique())
     selected_groups = st.sidebar.multiselect(group_label, options=all_groups, default=[])
     

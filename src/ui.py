@@ -79,7 +79,7 @@ def render_metrics(df):
     unit = df['unit'].iloc[0] if not df.empty and 'unit' in df.columns else "m"
     c2.metric("💧 Avg Reading", f"{avg_level:.2f} {unit}")
     
-    group_type = "Aquifers" if "level" in str(df['measure_url'].iloc[0] if not df.empty else "") else "Locations"
+    group_type = "Aquifers"
     c3.metric(f"📊 {group_type}", f"{df['grouping'].nunique() if 'grouping' in df.columns else 0}")
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -170,7 +170,7 @@ def render_charts(df):
         st.info("Select items in sidebar to view analytics.")
         return
 
-    group_name = "Aquifer Layer" if "level" in str(df['measure_url'].iloc[0] if not df.empty else "") else "Location"
+    group_name = "Aquifer Layer"
     st.markdown(f"### 📊 Stations per {group_name}")
     
     chart = alt.Chart(df).mark_bar(cornerRadiusTopLeft=8, cornerRadiusTopRight=8).encode(
