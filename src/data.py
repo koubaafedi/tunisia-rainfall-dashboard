@@ -1,215 +1,179 @@
 import pandas as pd
 import requests
 import streamlit as st
+import logging
 from datetime import datetime, timedelta
-import json
+from typing import Optional, Dict, Any, List
+from . import config
 
-@st.cache_data(ttl=86400) # Cache station metadata for 24 hours
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def _normalize_station_df(df: pd.DataFrame, source: str) -> pd.DataFrame:
+    """Standardizes station metadata from any EA source."""
+    if df.empty: return pd.DataFrame()
+    
+    res = pd.DataFrame()
+    
+    # Identifier Priority
+    # In Hydrology, Reading IDs (SU09_56A) often appear in wiskiID or stationReference. 
+    # In Flood Monitoring, they appear in stationReference.
+    ids = [df.get(c) for c in ['stationReference', 'wiskiID', 'notation'] if c in df.columns]
+    if not ids: return pd.DataFrame()
+    
+    # Coalesce: find first non-null ID
+    res['stationReference'] = ids[0]
+    for i in ids[1:]:
+        res['stationReference'] = res['stationReference'].fillna(i)
+        
+    res['stationReference'] = res['stationReference'].astype(str).str.upper()
+    
+    # Coordinates
+    res['latitude'] = pd.to_numeric(df.get('lat'), errors='coerce')
+    res['longitude'] = pd.to_numeric(df.get('long'), errors='coerce')
+    
+    # Attribution
+    res['station_label'] = df.get('label', 'Unknown Station')
+    res['grouping'] = df.get('aquifer', 'Unclassified Aquifer')
+    res['date_opened'] = df.get('dateOpened', 'Unknown')
+    res['town'] = df.get('town')
+    res['riverName'] = df.get('riverName')
+    res['stageScale_url'] = df.get('stageScale')
+    
+    status = df.get('status', 'Active')
+    res['is_active'] = status.apply(lambda x: 'Active' in str(x))
+    
+    return res
+
+@st.cache_data(ttl=config.DEFAULT_CACHE_TTL_METADATA)
 def fetch_stations_metadata() -> pd.DataFrame:
-    """Fetches the static national station list (3600+ items) safely."""
+    """Aggregates national station metadata for full coverage."""
     try:
-        url = "https://environment.data.gov.uk/hydrology/id/stations?observedProperty=groundwaterLevel&_limit=5000"
-        resp = requests.get(url, timeout=25)
-        if resp.status_code != 200: return pd.DataFrame()
+        # Fetch from both APIs with sufficient limits
+        h_url = config.HYDRO_STATIONS_URL.replace("_limit=5000", "_limit=10000")
+        h_resp = requests.get(h_url, timeout=25)
+        f_resp = requests.get(config.FLOOD_STATIONS_URL, timeout=25)
         
-        items = resp.json().get('items', [])
-        if not items: return pd.DataFrame()
+        h_df = _normalize_station_df(pd.DataFrame(h_resp.json().get('items', [])), "Hydro") if h_resp.status_code == 200 else pd.DataFrame()
+        f_df = _normalize_station_df(pd.DataFrame(f_resp.json().get('items', [])), "Flood") if f_resp.status_code == 200 else pd.DataFrame()
         
-        df = pd.DataFrame(items)
+        if h_df.empty and f_df.empty: return pd.DataFrame()
         
-        # Safe column mapping
-        # Metadata extraction
-        df['latitude'] = pd.to_numeric(df.get('lat'), errors='coerce')
-        df['longitude'] = pd.to_numeric(df.get('long'), errors='coerce')
-        df['station_label'] = df.get('label', 'Unknown Station')
-        df['date_opened'] = df.get('dateOpened', 'Unknown')
+        # Merge sources: Union all stations
+        combined = pd.concat([h_df, f_df], ignore_index=True)
+        # Take the first occurrence (preserving Hydro metadata if available first)
+        final = combined.groupby('stationReference').first().reset_index()
         
-        # Status parsing
-        df['status_raw'] = df.get('status', 'Active')
-        df['is_active'] = df['status_raw'].apply(lambda x: 'Active' in str(x))
-        
-        # Use wiskiID as primary ref for Hydrology stations as it matches Flood API better
-        if 'stationReference' in df.columns and 'wiskiID' in df.columns:
-            df['stationReference'] = df['stationReference'].fillna(df['wiskiID'])
-        elif 'wiskiID' in df.columns:
-            df['stationReference'] = df['wiskiID']
-        
-        df['stationReference'] = df['stationReference'].astype(str)
-        df['stageScale_url'] = df.get('stageScale')
-        
-        # Fallback for grouping
-        df['grouping'] = df.get('aquifer').fillna("Unclassified Aquifer")
-        df['grouping'] = df['grouping'].replace({None: "Unclassified Aquifer", "nan": "Unclassified Aquifer"})
-        
-        # Keep only what we have
-        available_cols = ['stationReference', 'station_label', 'latitude', 'longitude', 'grouping', 'date_opened', 'is_active', 'stageScale_url']
-        for opt in ['aquifer', 'town', 'riverName']:
-            if opt in df.columns:
-                available_cols.append(opt)
-                
-        return df[available_cols]
+        # Coordinate Guard
+        return final.dropna(subset=['latitude', 'longitude'])
     except Exception as e:
-        st.error(f"Metadata Fetch Error: {e}")
+        logger.error(f"Metadata Aggregation Failed: {e}")
         return pd.DataFrame()
 
-@st.cache_data(ttl=600) # Cache live readings for 10 minutes
+@st.cache_data(ttl=config.DEFAULT_CACHE_TTL_READINGS)
 def fetch_latest_readings() -> pd.DataFrame:
-    """Fetches real-time levels safely."""
     try:
-        url = "https://environment.data.gov.uk/flood-monitoring/id/measures?parameter=level&qualifier=Groundwater&_limit=10000"
-        resp = requests.get(url, timeout=25)
-        meas_data = []
-        if resp.status_code == 200:
-            items = resp.json().get('items', [])
-            for m in items:
-                latest = m.get('latestReading', {})
-                val = latest.get('value')
-                unit = m.get('unitName', 'm')
-                
-                conv_factor = 1.0
-                if unit.lower() in ['mm', 'millimetre', 'millimeter']: conv_factor = 0.001
-                elif unit.lower() in ['cm', 'centimetre', 'centimeter']: conv_factor = 0.01
-
-                if val is not None:
-                    val = float(val) * conv_factor
-
-                meas_data.append({
-                    'stationReference': str(m.get('stationReference')),
-                    'measure_url': m.get('@id'),
-                    'latest_value': val,
-                    'latest_time': latest.get('dateTime'),
-                    'conv_factor': conv_factor
-                })
-        return pd.DataFrame(meas_data)
-    except:
-        return pd.DataFrame()
-
-@st.cache_data(ttl=600)
-def fetch_trends_data(df_base: pd.DataFrame) -> pd.DataFrame:
-    """Calculates deltas and trends safely."""
-    try:
-        if df_base.empty or 'measure_url' not in df_base.columns:
-            return df_base
+        resp = requests.get(config.FLOOD_MEASURES_URL, timeout=25)
+        items = resp.json().get('items', []) if resp.status_code == 200 else []
+        
+        out = []
+        for it in items:
+            latest = it.get('latestReading', {})
+            val = latest.get('value')
+            if val is None: continue
             
-        today_url = "https://environment.data.gov.uk/flood-monitoring/data/readings?today&parameter=level&qualifier=Groundwater&_limit=10000"
-        resp_today = requests.get(today_url, timeout=15)
-        if resp_today.status_code != 200: return df_base
-        
-        t_items = resp_today.json().get('items', [])
-        if not t_items: return df_base
-        
-        df_today = pd.DataFrame(t_items)
-        df_today['value'] = pd.to_numeric(df_today['value'], errors='coerce')
-        df_start = df_today.sort_values('dateTime').groupby('measure').first().reset_index()
-        df_start = df_start[['measure', 'value']].rename(columns={'measure': 'measure_url', 'value': 'start_value'})
-        
-        df_merged = pd.merge(df_base, df_start, on='measure_url', how='left')
-        
-        # Trend calculation logic
-        def calc_trend(row):
-            lv = float(row.get('latest_value', 0))
-            # Start value might need normalization too if it was mm/cm
-            # But here we already normalized latest_value. start_value from readings API
-            # needs the same conv_factor.
-            cf = row.get('conv_factor', 1.0)
-            sv = float(row.get('start_value', lv / cf if cf else lv)) * cf 
+            unit = str(it.get('unitName', 'm')).lower()
+            conv = 0.001 if 'mm' in unit else (0.01 if 'cm' in unit else 1.0)
             
-            diff = lv - sv
-            threshold = 0.002
-            if diff > threshold: return "⬆️", "#2ecc71", "Rising"
-            if diff < -threshold: return "⬇️", "#e74c3c", "Falling"
-            return "➡️", "#95a5a6", "Stable"
-        
-        df_merged[['trend_icon', 'trend_color', 'trend_label']] = df_merged.apply(
-            lambda r: pd.Series(calc_trend(r)), axis=1
-        )
-        
-        df_merged['daily_delta'] = df_merged['latest_value'] - (df_merged['start_value'].fillna(df_merged['latest_value'] / df_merged['conv_factor'].fillna(1.0)) * df_merged['conv_factor'].fillna(1.0))
-            
-        return df_merged
-    except:
-        return df_base
+            out.append({
+                'stationReference': str(it.get('stationReference', '')).upper(),
+                'measure_url': it.get('@id'),
+                'latest_value': float(val) * conv,
+                'latest_time': latest.get('dateTime'),
+                'conv_factor': conv
+            })
+        return pd.DataFrame(out)
+    except: return pd.DataFrame()
 
-@st.cache_data(ttl=3600)
-def fetch_station_scale(scale_url: str, conv_factor: float = 1.0) -> dict:
-    """Fetches historical extremes and typical ranges for a station."""
-    if not scale_url: return {}
+@st.cache_data(ttl=config.DEFAULT_CACHE_TTL_METADATA)
+def fetch_historical_snapshot(window_days: int) -> pd.DataFrame:
     try:
-        url = scale_url.replace("http://", "https://")
-        if not url.endswith(".json"): url += ".json"
-        resp = requests.get(url, timeout=10)
-        if resp.status_code != 200: return {}
-        data = resp.json().get('items', {})
-        if not data: return {}
-        
-        def extract_val(field):
-            obj = data.get(field, {})
-            if isinstance(obj, dict):
-                return {'value': obj.get('value', 0) * conv_factor, 'dateTime': obj.get('dateTime', 'N/A')}
-            return obj * conv_factor if obj else None
+        dt = (datetime.utcnow() - timedelta(days=window_days)).strftime('%Y-%m-%d')
+        url = config.FLOOD_READINGS_BASE_URL.format(date=dt, limit=10000)
+        resp = requests.get(url, timeout=20)
+        items = resp.json().get('items', []) if resp.status_code == 200 else []
+        if not items: return pd.DataFrame()
+        df = pd.DataFrame(items)
+        df['value'] = pd.to_numeric(df['value'], errors='coerce')
+        return (df.sort_values('dateTime')
+                  .groupby('measure')
+                  .first()
+                  .reset_index()[['measure', 'value']]
+                  .rename(columns={'measure': 'measure_url', 'value': 'hist_value'}))
+    except: return pd.DataFrame()
 
-        return {
-            'maxOnRecord': extract_val('maxOnRecord'),
-            'minOnRecord': extract_val('minOnRecord'),
-            'typicalRangeHigh': data.get('typicalRangeHigh', 0) * conv_factor,
-            'typicalRangeLow': data.get('typicalRangeLow', 0) * conv_factor,
-            'datum': data.get('datum', 0)
-        }
-    except:
-        return {}
-
-def fetch_uk_data(param_type: str = "level") -> pd.DataFrame:
-    """Unified entry point with robust error handling and caching."""
+@st.cache_data(ttl=config.DEFAULT_CACHE_TTL_READINGS)
+def fetch_trends_data(df: pd.DataFrame, window_days: int = 0) -> pd.DataFrame:
+    if df.empty or 'measure_url' not in df.columns: return df
     try:
-        df_st = fetch_stations_metadata()
-        df_meas = fetch_latest_readings()
-
-        if df_st.empty:
-            st.warning("National station metadata not available.")
-            return pd.DataFrame()
-        
-        if not df_meas.empty:
-            df_meas = df_meas.drop_duplicates(subset=['stationReference'])
-            df_merged = pd.merge(df_st, df_meas, on='stationReference', how='inner')
+        if window_days == 0:
+            resp = requests.get(config.FLOOD_TODAY_URL, timeout=15)
+            items = resp.json().get('items', []) if resp.status_code == 200 else []
+            if not items: return df
+            df_pts = pd.DataFrame(items)
+            df_pts['value'] = pd.to_numeric(df_pts['value'], errors='coerce')
+            pts = df_pts.sort_values('dateTime').groupby('measure').first().reset_index()[['measure', 'value']].rename(columns={'measure': 'measure_url', 'value': 'hist_value'})
         else:
-            return pd.DataFrame()
+            pts = fetch_historical_snapshot(window_days)
+            if pts.empty: return df
 
-        df_final = fetch_trends_data(df_merged)
+        dm = pd.merge(df, pts, on='measure_url', how='left')
+        dm['hist_value_norm'] = dm['hist_value'] * dm['conv_factor'].fillna(1.0)
         
-        if 'trend_icon' not in df_final.columns:
-            df_final['trend_icon'], df_final['trend_color'], df_final['trend_label'] = "➡️", "#95a5a6", "Stable"
-            df_final['daily_delta'] = 0.0
+        def _get_trend(r):
+            lv, hv = float(r.get('latest_value', 0)), float(r.get('hist_value_norm', 0))
+            diff = lv - hv
+            if diff > config.TREND_THRESHOLD: return "⬆️", config.THEME_COLORS["rising"], "Rising"
+            if diff < -config.TREND_THRESHOLD: return "⬇️", config.THEME_COLORS["falling"], "Falling"
+            return "➡️", config.THEME_COLORS["stable"], "Stable"
+        
+        dm[['trend_icon', 'trend_color', 'trend_label']] = dm.apply(lambda r: pd.Series(_get_trend(r)), axis=1)
+        dm['period_delta'] = dm['latest_value'] - dm['hist_value_norm'].fillna(dm['latest_value'])
+        return dm
+    except: return df
 
-        # Calculate Health & Extremes for Sidebar Metrics
-        if not df_final.empty:
-            st.session_state.national_max = df_final['latest_value'].max()
-            st.session_state.national_min = df_final['latest_value'].min()
-            # Health Score: % of stations reporting in last 24h
-            day_ago = (datetime.utcnow() - timedelta(hours=24)).strftime('%Y-%m-%dT%H:%M:%SZ')
-            reported_count = len(df_final[df_final['latest_time'] > day_ago])
-            st.session_state.health_score = (reported_count / len(df_final)) * 100
-
-        return df_final.dropna(subset=['latitude', 'longitude'])
-    except Exception as e:
-        st.error(f"Data Pipeline Error: {e}")
-        return pd.DataFrame()
-
-@st.cache_data(ttl=3600)
-def fetch_station_history(station_reference: str, days: int = 7, conv_factor: float = 1.0) -> pd.DataFrame:
-    """Fetches unit-normalized history."""
+def fetch_uk_data(window_days: int = 0) -> pd.DataFrame:
     try:
-        since_date = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%d')
-        url = f"https://environment.data.gov.uk/flood-monitoring/id/stations/{station_reference}/readings?since={since_date}&_sorted&_limit=1000"
+        meta = fetch_stations_metadata()
+        meas = fetch_latest_readings()
+        if meta.empty or meas.empty: return pd.DataFrame()
         
-        resp = requests.get(url, timeout=10)
-        if resp.status_code != 200: return pd.DataFrame()
-            
-        readings = resp.json().get('items', [])
-        if not readings: return pd.DataFrame()
-        
-        df = pd.DataFrame(readings)
+        meas = meas.drop_duplicates(subset=['stationReference'])
+        merged = pd.merge(meta, meas, on='stationReference', how='inner')
+        return fetch_trends_data(merged, window_days=window_days)
+    except: return pd.DataFrame()
+
+@st.cache_data(ttl=config.DEFAULT_CACHE_TTL_HISTORY)
+def fetch_station_scale(url: str, conv: float = 1.0) -> dict:
+    if not url: return {}
+    try:
+        d = requests.get(str(url).replace("http://", "https://") + ".json", timeout=10).json().get('items', {})
+        def _p(k):
+            o = d.get(k, {})
+            if isinstance(o, dict): return {'value': o.get('value', 0)*conv, 'dateTime': o.get('dateTime', 'N/A')}
+            return None
+        return {'maxOnRecord': _p('maxOnRecord'), 'minOnRecord': _p('minOnRecord'), 'typicalRangeHigh': d.get('typicalRangeHigh', 0)*conv, 'typicalRangeLow': d.get('typicalRangeLow', 0)*conv}
+    except: return {}
+
+@st.cache_data(ttl=config.DEFAULT_CACHE_TTL_HISTORY)
+def fetch_station_history(ref: str, days: int = 7, conv: float = 1.0) -> pd.DataFrame:
+    try:
+        s = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%d')
+        it = requests.get(config.STATION_READINGS_URL.format(station=ref, since=s), timeout=10).json().get('items', [])
+        if not it: return pd.DataFrame()
+        df = pd.DataFrame(it)
         df['dateTime'] = pd.to_datetime(df['dateTime'])
-        df['value'] = pd.to_numeric(df['value'], errors='coerce') * conv_factor
+        df['value'] = pd.to_numeric(df['value'], errors='coerce') * conv
         return df.sort_values('dateTime')
-    except:
-        return pd.DataFrame()
+    except: return pd.DataFrame()

@@ -1,88 +1,130 @@
 import streamlit as st
 import pandas as pd
-from src import data, ui
+from src import data, ui, config
 
-# --- PAGE SETUP ---
-st.set_page_config(page_title="UK Environmental Dashboard", layout="wide", page_icon="🇬🇧")
+# --- INITIALIZATION ---
+st.set_page_config(
+    page_title="UK Groundwater Dashboard", 
+    layout="wide", 
+    page_icon="🇬🇧"
+)
 ui.apply_custom_css()
 
-# --- SIDEBAR NAVIGATION ---
+def initialize_session_state():
+    """Ensures all required session state keys are present."""
+    if 'current_window_label' not in st.session_state:
+        st.session_state.current_window_label = "Today (Morning)"
+
+def clear_data_cache():
+    """Purges cached dataframes to force a hard refresh."""
+    for key in list(st.session_state.keys()):
+        if key.startswith("df_w"):
+            del st.session_state[key]
+    st.rerun()
+
+initialize_session_state()
+
+# --- SIDEBAR: NAVIGATION & CONTROLS ---
 st.sidebar.title("🇬🇧 UK Monitoring")
-st.sidebar.info("Focus: National Groundwater Monitoring")
-
+st.sidebar.info("Operational Oversight: National Groundwater Strategy")
 st.sidebar.markdown("---")
-st.sidebar.header("🔍 Filters")
 
-# --- DATA LOADING ---
-if 'main_df' not in st.session_state:
-    st.session_state.main_df = data.fetch_uk_data()
+# 1. Timeline Slider (Comparison Window)
+st.sidebar.subheader("📅 Temporal Comparison")
+window_days = st.sidebar.slider(
+    "Comparison Offset",
+    min_value=0,
+    max_value=config.MAX_COMPARISON_DAYS,
+    value=1,
+    help=f"0 = Morning Baseline | 1-{config.MAX_COMPARISON_DAYS} = Historical Snapshot"
+)
 
-df = st.session_state.main_df
+# Manage dynamic labels
+if window_days == 0:
+    st.session_state.current_window_label = "Today (Morning)"
+elif window_days == 1:
+    st.session_state.current_window_label = "Yesterday"
+else:
+    st.session_state.current_window_label = f"{window_days} Days Ago"
 
-if st.sidebar.button("🔄 Refresh Data"):
-    with st.spinner("Refreshing national data..."):
-        st.session_state.main_df = data.fetch_uk_data()
-        st.rerun()
+# 2. Global Data Refresh
+if st.sidebar.button("🔄 Full System Refresh"):
+    clear_data_cache()
 
-if not df.empty:
-    # FILTERS
-    group_label = "💎 Aquifer Layer"
-    all_groups = sorted(df['grouping'].dropna().unique())
-    selected_groups = st.sidebar.multiselect(group_label, options=all_groups, default=[])
+# --- DATA ORCHESTRATION ---
+state_key = f"df_w{window_days}"
+if state_key not in st.session_state:
+    with st.spinner(f"Synchronizing with {st.session_state.current_window_label}..."):
+        st.session_state[state_key] = data.fetch_uk_data(window_days=window_days)
+
+df_all = st.session_state[state_key]
+
+# --- MAIN INTERFACE ---
+if not df_all.empty:
+    # Layer Filtering (Sidebar)
+    st.sidebar.header("🔍 Geo-Filters")
+    aquifer_options = sorted(df_all['grouping'].unique())
+    selected_aquifers = st.sidebar.multiselect("Filter by Aquifer Layer", options=aquifer_options)
     
-    df_filtered = df[df['grouping'].isin(selected_groups)] if selected_groups else df
+    df_active = df_all[df_all['grouping'].isin(selected_aquifers)] if selected_aquifers else df_all
 
-    # --- RENDER HEADER ---
+    # Header Section
     st.markdown(f"""
         <div style='text-align: center; padding: 10px 0 30px 0;'>
-            <h1 style='margin: 0;'>💧 UK Groundwater Levels</h1>
-            <p style='color: #666; font-size: 1.1rem;'>National monitoring overview of aquifer health</p>
+            <h1 style='margin: 0;'>💧 UK Groundwater Intelligence</h1>
+            <p style='color: #666; font-size: 1.1rem;'>
+                National monitoring against <b>{st.session_state.current_window_label}</b> benchmark
+            </p>
         </div>
     """, unsafe_allow_html=True)
     
-    # --- RENDER CONTENT ---
-    tab_map, tab_charts, tab_data = st.tabs(["🗺️ Live Map", "📊 Regional Analysis", "💾 Data Center"])
+    # Dashboard Navigation
+    tab_map, tab_analytics, tab_raw = st.tabs([
+        "🗺️ Network Map", 
+        "📊 Trends & Records", 
+        "💾 Data Center"
+    ])
     
     with tab_map:
-        ui.render_metrics(df_filtered)
-        ui.render_map(df_filtered)
+        ui.render_metrics(df_active)
+        ui.render_map(df_active)
 
-    with tab_charts:
-        st.subheader("📊 Distribution by Aquifer")
-        ui.render_charts(df_filtered)
+    with tab_analytics:
+        st.subheader("📊 Distribution & Comparative Analysis")
+        ui.render_charts(df_active)
         
         st.markdown("---")
         
-        # We wrap this in a fragment if available (Streamlit 1.33+)
-        # This isolates the spinner and chart updates so they don't grey out the map Tab
         @st.fragment
-        def render_analysis_section(dff):
-            st.subheader("🧐 Individual Station Analysis")
-            sel_label = st.selectbox(
-                "Select a station to view historical data (7 Days)",
+        def analysis_fragment(dff: pd.DataFrame):
+            st.subheader("🧐 Station Deep-Dive")
+            station_name = st.selectbox(
+                f"Selected Station (Context: {config.DEFAULT_STATION_HISTORY_DAYS} Days)",
                 options=sorted(dff['station_label'].unique()),
-                key="station_selector"
+                key="active_station_picker"
             )
             
-            if sel_label:
-                row = dff[dff['station_label'] == sel_label].iloc[0]
-                st_ref = row.get('stationReference')
-                cf = row.get('conv_factor', 1.0)
-                ss_url = row.get('stageScale_url')
+            if station_name:
+                match = dff[dff['station_label'] == station_name].iloc[0]
+                ref = match.get('stationReference')
+                cf = match.get('conv_factor', 1.0)
+                scale_url = match.get('stageScale_url')
                 
-                if st_ref:
-                    with st.spinner(f"Loading history for {sel_label}..."):
-                        df_h = data.fetch_station_history(st_ref, conv_factor=cf)
-                        scale_data = data.fetch_station_scale(ss_url, conv_factor=cf) if ss_url else None
-                        ui.render_station_history(df_h, sel_label, scale_data=scale_data)
+                if ref:
+                    with st.spinner(f"Fetching history for {station_name}..."):
+                        df_h = data.fetch_station_history(ref, conv_factor=cf)
+                        scale = data.fetch_station_scale(scale_url, conv_factor=cf) if scale_url else None
+                        ui.render_station_history(df_h, station_name, scale_data=scale)
                 else:
-                    st.warning("Historical data reference unavailable.")
+                    st.warning("Station reference ID missing from API response.")
 
-        render_analysis_section(df_filtered)
+        analysis_fragment(df_active)
 
-    with tab_data:
-        st.subheader("💾 Raw Station Data")
-        ui.render_data_table(df_filtered)
+    with tab_raw:
+        st.subheader("💾 Exportable Dataset")
+        ui.render_data_table(df_active)
 
 else:
-    st.error(f"Could not load {page} data. The API might be busy.")
+    st.error("Platform Data Link Severed. Please check API connectivity or refresh.")
+    if st.button("Reconnect to National API"):
+        clear_data_cache()
