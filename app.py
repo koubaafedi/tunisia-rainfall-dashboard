@@ -1,93 +1,82 @@
 import streamlit as st
-import datetime
 import pandas as pd
 from src import data, ui
 
 # --- PAGE SETUP ---
-st.set_page_config(page_title="Ressources Hydrauliques", layout="wide", page_icon="💧")
+st.set_page_config(page_title="UK Environmental Dashboard", layout="wide", page_icon="🇬🇧")
 ui.apply_custom_css()
 
+# --- SIDEBAR NAVIGATION ---
+st.sidebar.title("🇬🇧 UK Monitoring")
+page = st.sidebar.radio("📁 Select Parameter", ["💧 Groundwater Levels", "🌧️ Rainfall Monitoring"])
+
+st.sidebar.markdown("---")
+st.sidebar.header("🔍 Filters")
+
 # --- DATA LOADING ---
-df = data.load_raw_data()
+if "Groundwater" in page:
+    param_type = "level"
+    title_prefix = "Groundwater"
+    color_scheme = "blues"
+else:
+    param_type = "rainfall"
+    title_prefix = "Rainfall"
+    color_scheme = "purples"
 
-# --- MAIN LAYOUT ---
-ui.render_header()
+df = data.fetch_uk_data(param_type=param_type)
 
-if df is not None:
-    # --- FILTERS ---
-    st.sidebar.header("🔍 Filtres")
+if not df.empty:
+    # FILTERS
+    group_label = "💎 Aquifer Layer" if param_type == "level" else "📍 Town / Location"
+    all_groups = sorted(df['grouping'].dropna().unique())
+    selected_groups = st.sidebar.multiselect(group_label, options=all_groups, default=[])
     
-    if 'date_dt' in df.columns:
-        dates = df['date_dt'].dropna().sort_values().unique()
-        if len(dates) > 0:
-            selected_date = st.sidebar.select_slider(
-                "📅 Date",
-                options=dates,
-                value=dates[-1],
-                format_func=lambda d: pd.to_datetime(d).strftime('%d/%m/%Y')
-            )
-            df_day = df[df['date_dt'] == selected_date]
-        else:
-            df_day = df # No dates found
-    else:
-        df_day = df
+    df_filtered = df[df['grouping'].isin(selected_groups)] if selected_groups else df
 
-    # --- ADVANCED FILTERS ---
-    st.sidebar.markdown("---")
-    st.sidebar.header("🌪️ Filtres Avancés")
+    # --- RENDER HEADER ---
+    st.markdown(f"""
+        <div style='text-align: center; padding: 10px 0 30px 0;'>
+            <h1 style='margin: 0;'>{page}</h1>
+            <p style='color: #666; font-size: 1.1rem;'>National overview of {title_prefix.lower()} monitoring stations</p>
+        </div>
+    """, unsafe_allow_html=True)
     
-    # 1. Region Filter
-    # Find Gov Col
-    gov_cols = [c for c in df_day.columns if 'gouvernorat' in c or 'region' in c or 'gov' in c]
-    gov_col = next((c for c in gov_cols if 'fr' in c), gov_cols[0] if gov_cols else None)
-    
-    if gov_col:
-        # Standardize for UI
-        df_day[gov_col] = df_day[gov_col].astype(str).str.title().str.strip()
-        all_govs = sorted(df_day[gov_col].unique())
-        selected_govs = st.sidebar.multiselect("📍 Gouvernorat", options=all_govs, default=[])
-        if selected_govs:
-            df_day = df_day[df_day[gov_col].isin(selected_govs)]
-
-    # 2. Trend Filter
-    if 'trend_category' in df_day.columns:
-        all_trends = ['En Hausse', 'En Baisse', 'Stable']
-        selected_trends = st.sidebar.multiselect("📈 Tendance", options=all_trends, default=[])
-        if selected_trends:
-            df_day = df_day[df_day['trend_category'].isin(selected_trends)]
-            
-    # 3. Rainfall Range Filter
-    if 'pluvio_du_jour' in df_day.columns and not df_day.empty:
-        min_rain = float(df_day['pluvio_du_jour'].min())
-        max_rain = float(df_day['pluvio_du_jour'].max())
-        if max_rain > min_rain:
-            val_rain = st.sidebar.slider("💧 Pluie (mm)", min_rain, max_rain, (min_rain, max_rain))
-            df_day = df_day[
-                (df_day['pluvio_du_jour'] >= val_rain[0]) & 
-                (df_day['pluvio_du_jour'] <= val_rain[1])
-            ]
-
-    # --- RENDER UI ---
-    tab_map, tab_charts, tab_data = st.tabs(["🗺️ Carte", "📊 Analyse", "💾 Données"])
+    # --- RENDER CONTENT ---
+    tab_map, tab_charts, tab_data = st.tabs(["🗺️ Live Map", "📊 Regional Analysis", "💾 Data Center"])
     
     with tab_map:
-        ui.render_metrics(df_day)
-        
-        # Add Heatmap Toggle
-        show_heatmap = st.toggle("🔥 Afficher la Heatmap (Densité de pluie)", value=False)
-        ui.render_map(df_day, show_heatmap=show_heatmap)
+        ui.render_metrics(df_filtered)
+        ui.render_map(df_filtered)
 
     with tab_charts:
-        st.subheader("📊 Analyse Détaillée")
-        ui.render_charts(df_day)
+        st.subheader(f"📊 {title_prefix} Distribution")
+        
+        # Aggregate view
+        ui.render_charts(df_filtered)
+        
+        st.markdown("---")
+        # Individual Station History
+        st.subheader("🧐 Individual Station Analysis")
+        selected_station_label = st.selectbox(
+            "Select a station to view historical data (7 Days)",
+            options=sorted(df_filtered['station_label'].unique()),
+            index=0 if not df_filtered.empty else None
+        )
+        
+        if selected_station_label:
+            station_row = df_filtered[df_filtered['station_label'] == selected_station_label].iloc[0]
+            st_ref = station_row.get('stationReference')
+            cf = station_row.get('conv_factor', 1.0)
+            if st_ref:
+                with st.spinner(f"Fetching history for {selected_station_label}..."):
+                    df_hist = data.fetch_station_history(st_ref, conv_factor=cf)
+                    ui.render_station_history(df_hist, selected_station_label)
+            else:
+                st.warning("This station does not support historical readings via this ID.")
 
     with tab_data:
-        st.subheader("💾 Données Brutes")
-        ui.render_data_table(df_day)
-    
-    with st.expander("📂 Données Brutes"):
-        cols = [c for c in ['date', 'station', 'nom_ar', 'pluvio_du_jour', 'status', 'pct'] if c in df_day.columns]
-        st.dataframe(df_day[cols] if cols else df_day)
+        st.subheader("💾 Raw Station Data")
+        ui.render_data_table(df_filtered)
 
 else:
-    st.error("Impossible de charger les données. Vérifiez la connexion ou le format des fichiers.")
+    st.error(f"Could not load {page} data. The API might be busy.")

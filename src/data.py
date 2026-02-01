@@ -1,79 +1,168 @@
 import pandas as pd
 import requests
-import io
 import streamlit as st
-import datetime
-from src.models import StationData
+from datetime import datetime, timedelta
+import json
 
-@st.cache_data(ttl=3600)
-def load_raw_data() -> pd.DataFrame:
-    """Fetches and merges rainfall and station data."""
-    rain_url = "https://catalog.agridata.tn/dataset/082abfac-7a9f-4e27-90c7-1621172737c4/resource/e93a4205-84de-47a5-bcdb-e00520b15e10/download/daily_pluvio.csv"
-    station_url = "https://catalog.agridata.tn/dataset/liste-des-stations-pluviometriques-en-tunisie/resource/f448a7e2-c321-4cf7-9fc1-1cb89556190d/download/stations_pluviometrie.xls"
-    
+@st.cache_data(ttl=900)
+def fetch_uk_data(param_type: str = "level") -> pd.DataFrame:
+    """
+    Fetches UK stations and latest readings with high limits for full coverage.
+    Uses 'qualifier=Groundwater' reaching 1000+ locations.
+    """
     try:
-        # Load Rain
-        r_rain = requests.get(rain_url)
-        df_rain = pd.read_csv(io.StringIO(r_rain.content.decode('utf-8')))
-        df_rain.columns = df_rain.columns.str.strip().str.lower()
-        
-        # Load Stations
-        r_st = requests.get(station_url)
-        df_st = pd.read_excel(io.BytesIO(r_st.content))
-        df_st.columns = df_st.columns.str.strip().str.lower()
-        
-        # Merge columns check
-        rain_col = next((c for c in ['station', 'station_name', 'nom_station', 'nom_fr', 'nom_ar'] if c in df_rain.columns), None)
-        st_col = next((c for c in ['nom_fr', 'nom', 'station', 'nom_station'] if c in df_st.columns), None)
-        
-        if not rain_col or not st_col:
-            st.error(f"Column mismatch. Rain cols: {list(df_rain.columns)}. Station cols: {list(df_st.columns)}")
-            return None
-            
-        df_rain['merge_key'] = df_rain[rain_col].astype(str).str.strip().str.upper()
-        df_st['merge_key'] = df_st[st_col].astype(str).str.strip().str.upper()
-        
-        df_merged = pd.merge(df_rain, df_st, on='merge_key', how='left')
-        
-        # Coalesce Coordinates (prefer Station data _y, then Rain data _x)
-        if 'latitude' not in df_merged.columns and 'latitude_y' in df_merged.columns:
-            df_merged['latitude'] = df_merged['latitude_y'].fillna(df_merged.get('latitude_x'))
-            df_merged['longitude'] = df_merged['longitude_y'].fillna(df_merged.get('longitude_x'))
+        # 1. Define URLs
+        if param_type == "rainfall":
+            st_url = "https://environment.data.gov.uk/flood-monitoring/id/stations?parameter=rainfall&_limit=10000"
+            meas_url = "https://environment.data.gov.uk/flood-monitoring/id/measures?parameter=rainfall&_limit=10000"
+        else:
+            # Use Hydrology API for Stations (3600+ locations nationwide with coords)
+            st_url = "https://environment.data.gov.uk/hydrology/id/stations?observedProperty=groundwaterLevel&_limit=5000"
+            # Use Flood Monitoring API for Measures (real-time readings)
+            meas_url = "https://environment.data.gov.uk/flood-monitoring/id/measures?parameter=level&qualifier=Groundwater&_limit=10000"
 
-        # Parse Dates
-        if 'date' in df_merged.columns:
-            df_merged['date_dt'] = pd.to_datetime(df_merged['date'], errors='coerce')
+        # 2. Fetch Stations
+        resp_st = requests.get(st_url, timeout=25)
+        if resp_st.status_code != 200:
+            st.error(f"Stations API error: {resp_st.status_code}")
+            return pd.DataFrame()
             
-        # Fix Numerics
-        cols = ['cumul_periode', 'cumul_moy_periode', 'pluvio_du_jour', 'latitude', 'longitude', 'cumul_periode_precedente']
-        for c in cols:
-            if c in df_merged.columns:
-                df_merged[c] = pd.to_numeric(df_merged[c], errors='coerce').fillna(0)
-                
-        # Calculate Logic
-        if 'cumul_moy_periode' in df_merged.columns and 'cumul_periode' in df_merged.columns:
-            df_merged['pct'] = (df_merged['cumul_periode'] / df_merged['cumul_moy_periode'].replace(0, 1)) * 100
+        items_st = resp_st.json().get('items', [])
+        df_st = pd.DataFrame(items_st)
         
-        # Calculate Yearly Trend
-        if 'cumul_periode' in df_merged.columns and 'cumul_periode_precedente' in df_merged.columns:
-            df_merged['diff_year'] = df_merged['cumul_periode'] - df_merged['cumul_periode_precedente']
-            df_merged['trend_arrow'] = df_merged['diff_year'].apply(lambda x: "⬆️" if x >= 0 else "⬇️")
+        if df_st.empty:
+            return pd.DataFrame()
+
+        # Clean Stations with appropriate mapping for Hydrology/Flood API differences
+        df_st['latitude'] = pd.to_numeric(df_st['lat'], errors='coerce')
+        df_st['longitude'] = pd.to_numeric(df_st['long'], errors='coerce')
+        df_st['station_label'] = df_st['label'].fillna("Unknown")
+        
+        if param_type == "level":
+            # Hydrology API specific: use stationReference or wiskiID for merging
+            df_st['stationReference'] = df_st['stationReference'].fillna(df_st.get('wiskiID', ''))
+            # Use Aquifer as the primary grouping for groundwater
+            df_st['grouping'] = df_st['aquifer'].fillna("Unclassified Aquifer")
+        else:
+            # Flood API (Rainfall) specific
+            df_st['stationReference'] = df_st['stationReference'].fillna(df_st.get('notation', ''))
+            # Use Town/Catchment for rainfall
+            df_st['grouping'] = df_st.get('town', df_st.get('catchmentName', "General Monitoring"))
+        
+        # 3. Fetch Measures (contains latestReading)
+        resp_meas = requests.get(meas_url, timeout=25)
+        meas_data = []
+        if resp_meas.status_code == 200:
+            items_m = resp_meas.json().get('items', [])
+            for m in items_m:
+                latest = m.get('latestReading', {})
+                val = latest.get('value')
+                unit = m.get('unitName', 'm')
+                
+                # NORMALIZE TO METERS
+                # NORMALIZE TO METERS
+                conv_factor = 1.0
+                if unit.lower() in ['mm', 'millimetre', 'millimeter']:
+                    conv_factor = 0.001
+                elif unit.lower() in ['cm', 'centimetre', 'centimeter']:
+                    conv_factor = 0.01
+
+                if val is not None:
+                    val = float(val) * conv_factor
+
+                meas_data.append({
+                    'stationReference': m.get('stationReference'),
+                    'measure_url': m.get('@id'),
+                    'latest_value': val,
+                    'latest_time': latest.get('dateTime'),
+                    'unit': 'm', # Unify to meter
+                    'conv_factor': conv_factor,
+                    'station_url_flood': m.get('station')
+                })
+        df_meas = pd.DataFrame(meas_data)
+
+        # 4. Merge on Station Reference
+        if not df_meas.empty:
+            df_meas = df_meas.drop_duplicates(subset=['stationReference'])
+            # We use a Left join to prioritize the coordinates from Hydrology API
+            df_merged = pd.merge(df_st, df_meas, on='stationReference', how='left')
+            df_merged['latest_value'] = pd.to_numeric(df_merged['latest_value'], errors='coerce').fillna(0.0)
+        else:
+            df_merged = df_st.copy()
+            df_merged['latest_value'] = 0.0
+            df_merged['conv_factor'] = 1.0
+
+        # 5. FETCH REAL TRENDS (Bulk approach for Today)
+        # We compare Today's latest reading vs the first reading of today to get a trend.
+        try:
+            qual_filter = "Groundwater" if param_type == "level" else "rainfall"
+            param_filter = "level" if param_type == "level" else "rainfall"
+            today_url = f"https://environment.data.gov.uk/flood-monitoring/data/readings?today&parameter={param_filter}&qualifier={qual_filter}&_limit=10000"
             
-            def get_trend_cat(x):
-                if x > 0: return 'En Hausse'
-                elif x < 0: return 'En Baisse'
-                return 'Stable'
-            
-            df_merged['trend_category'] = df_merged['diff_year'].apply(get_trend_cat)
-            
-        return df_merged
+            resp_today = requests.get(today_url, timeout=15)
+            if resp_today.status_code == 200:
+                t_items = resp_today.json().get('items', [])
+                if t_items:
+                    df_today = pd.DataFrame(t_items)
+                    df_today['value'] = pd.to_numeric(df_today['value'], errors='coerce')
+                    # Get first reading of today for each measure
+                    df_start = df_today.sort_values('dateTime').groupby('measure').first().reset_index()
+                    df_start = df_start[['measure', 'value']].rename(columns={'measure': 'measure_url', 'value': 'start_value'})
+                    
+                    df_merged = pd.merge(df_merged, df_start, on='measure_url', how='left')
+                    
+                    # NORMALIZE START VALUE
+                    df_merged['start_value'] = df_merged['start_value'] * df_merged['conv_factor'].fillna(1.0)
+                    
+                    def calc_trend(row):
+                        lv = float(row.get('latest_value', 0))
+                        sv = float(row.get('start_value', lv))
+                        diff = lv - sv
+                        threshold = 0.002 if param_type == "level" else 0.0001
+                        if diff > threshold: return "⬆️", "#2ecc71", "Rising"
+                        if diff < -threshold: return "⬇️", "#e74c3c", "Falling"
+                        return "➡️", "#95a5a6", "Stable"
+                    
+                    df_merged[['trend_icon', 'trend_color', 'trend_label']] = df_merged.apply(
+                        lambda r: pd.Series(calc_trend(r)), axis=1
+                    )
+                else:
+                    df_merged['trend_icon'], df_merged['trend_color'], df_merged['trend_label'] = "➡️", "#95a5a6", "Stable"
+            else:
+                df_merged['trend_icon'], df_merged['trend_color'], df_merged['trend_label'] = "➡️", "#95a5a6", "Stable"
+        except:
+             df_merged['trend_icon'], df_merged['trend_color'], df_merged['trend_label'] = "➡️", "#95a5a6", "Stable"
+
+        # Post-process deltas for display
+        if 'start_value' in df_merged.columns:
+            df_merged['daily_delta'] = df_merged['latest_value'] - df_merged['start_value'].fillna(df_merged['latest_value'])
+        else:
+            df_merged['daily_delta'] = 0.0
+
+        # Drop stations without coordinates or without real-time measures
+        return df_merged.dropna(subset=['latitude', 'longitude', 'measure_url'])
 
     except Exception as e:
-        st.error(f"Data Load Error: {e}")
-        return None
+        st.error(f"Global Data Fetch Error: {e}")
+        return pd.DataFrame()
 
-def get_status_color(pct: float) -> tuple[str, str]:
-    if pct < 60: return "Critique", "#e74c3c" # Red
-    elif pct < 90: return "Alerte", "#f39c12"   # Orange
-    elif pct < 110: return "Normal", "#2ecc71"  # Green
-    return "Excédentaire", "#3498db"            # Blue
+def fetch_station_history(station_reference: str, days: int = 7, conv_factor: float = 1.0) -> pd.DataFrame:
+    """
+    Fetches historical readings for a specific station.
+    """
+    try:
+        since_date = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%d')
+        url = f"https://environment.data.gov.uk/flood-monitoring/id/stations/{station_reference}/readings?since={since_date}&_sorted&_limit=1000"
+        
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200: return pd.DataFrame()
+            
+        readings = resp.json().get('items', [])
+        if not readings: return pd.DataFrame()
+        
+        df = pd.DataFrame(readings)
+        df['dateTime'] = pd.to_datetime(df['dateTime'])
+        df['value'] = pd.to_numeric(df['value'], errors='coerce') * conv_factor
+        return df.sort_values('dateTime')
+    except:
+        return pd.DataFrame()

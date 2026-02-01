@@ -13,72 +13,50 @@ def apply_custom_css():
         
         html, body, [class*="css"] {
             font-family: 'Poppins', sans-serif;
-            color: #2c3e50;
+            color: #262626;
         }
         
         .stApp {
-            background-color: #f8f9fa;
+            background-color: #fcfcfc;
         }
         
         /* Sidebar Styling */
         section[data-testid="stSidebar"] {
             background-color: #ffffff;
-            border-right: 1px solid #e9ecef;
-            box-shadow: 2px 0 5px rgba(0,0,0,0.02);
+            border-right: 1px solid #f0f0f0;
         }
         
         /* Metric Cards */
         div[data-testid="stMetric"] {
-            background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
-            padding: 20px;
-            border-radius: 16px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.04), 0 1px 3px rgba(0,0,0,0.08);
-            border: 1px solid #e9ecef;
-            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            background: #ffffff;
+            padding: 18px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            border: 1px solid #efefef;
         }
         
-        div[data-testid="stMetric"]:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 15px rgba(0,0,0,0.08);
-        }
-        
-        /* Metric Labels & Values */
-        div[data-testid="stMetricLabel"] {
-            font-size: 0.9rem;
-            color: #6c757d !important;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            font-weight: 600;
-        }
-        
-        div[data-testid="stMetricValue"] {
-            font-size: 2rem;
-            color: #2c3e50 !important;
-            font-weight: 700;
-        }
-
         /* Header Styling */
-        h1 {
-            font-weight: 700;
-            color: #2c3e50;
-            letter-spacing: -1px;
-        }
-        h2, h3, h4 {
-            color: #34495e;
-        }
+        h1 { font-weight: 700; color: #1a1a1a; }
+        h3 { font-weight: 600; color: #333; }
         
         /* Map Container */
         iframe {
-            border-radius: 16px;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
-            border: 1px solid #e9ecef;
+            border-radius: 12px;
+            border: 1px solid #eee;
         }
         
-        /* Map Icons */
-        .map-icon {
-            background: rgba(0,0,0,0) !important;
-            border: none !important;
-            box-shadow: none !important;
+        /* Marker Styling */
+        .marker-badge {
+            background-color: white;
+            border-radius: 50%;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+            border: 2px solid #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 32px;
+            height: 32px;
+            font-size: 16px;
         }
     </style>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
@@ -86,167 +64,152 @@ def apply_custom_css():
 
 def render_header():
     st.markdown("""
-        <div style='text-align: center; padding: 20px 0 30px 0;'>
-            <h1 style='margin: 0;'>💧 Ressources Hydrauliques</h1>
-            <p style='color: #7f8c8d; font-size: 1.1rem;'>Surveillance et Analyse Quotidienne des Nappes</p>
+        <div style='text-align: center; padding: 10px 0 30px 0;'>
+            <h1 style='margin: 0;'>🇬🇧 UK Groundwater Dashboard</h1>
+            <p style='color: #666; font-size: 1.1rem;'>Real-time Hydrological Monitoring via Environment Agency API</p>
         </div>
     """, unsafe_allow_html=True)
 
-def render_metrics(df_day):
-    c1, c2, c3, c4 = st.columns(4)
+def render_metrics(df):
+    c1, c2, c3 = st.columns(3)
     
-    unique_dates = df_day['date_dt'].unique()
-    date_str = pd.to_datetime(unique_dates[0]).strftime('%d-%m-%Y') if len(unique_dates) > 0 else "-"
+    c1.metric("🛰️ Active Stations", f"{len(df)}")
     
-    c1.metric("📅 Date", date_str)
-    c2.metric("🔢 Stations", f"{len(df_day)}")
+    avg_level = df['latest_value'].mean() if 'latest_value' in df.columns else 0
+    unit = df['unit'].iloc[0] if not df.empty and 'unit' in df.columns else "m"
+    c2.metric("💧 Avg Reading", f"{avg_level:.2f} {unit}")
     
-    avg_rain = df_day['pluvio_du_jour'].mean() if 'pluvio_du_jour' in df_day.columns else 0
-    c3.metric("🌧️ Moyenne", f"{avg_rain:.1f} mm")
-    
-    max_rain = df_day['pluvio_du_jour'].max() if 'pluvio_du_jour' in df_day.columns else 0
-    c4.metric("⛈️ Max", f"{max_rain:.1f} mm")
+    group_type = "Aquifers" if "level" in str(df['measure_url'].iloc[0] if not df.empty else "") else "Locations"
+    c3.metric(f"📊 {group_type}", f"{df['grouping'].nunique() if 'grouping' in df.columns else 0}")
     st.markdown("<br>", unsafe_allow_html=True)
 
-def render_map(df_day, show_heatmap=False):
-    st.subheader("🗺️ Carte Interactive")
+def render_map(df):
+    st.subheader("🗺️ Live Station Network")
     
-    if df_day.empty or 'latitude' not in df_day.columns:
-        st.warning("Pas de données géographiques.")
+    if df.empty or 'latitude' not in df.columns:
+        st.warning("No geographic data available for the UK pivot.")
         return
 
-    m = folium.Map(location=[34.0, 9.5], zoom_start=7, tiles="CartoDB positron")
+    # Center on UK
+    m = folium.Map(location=[53.5, -2.5], zoom_start=6, tiles="CartoDB positron")
     
-    if show_heatmap:
-        # HEATMAP LAYER
-        heat_data = df_day[['latitude', 'longitude', 'pluvio_du_jour']].dropna().values.tolist()
-        HeatMap(heat_data, radius=15, blur=10, max_zoom=1).add_to(m)
-    else:
-        # Custom Legend (Bottom Right, Styled)
-        legend_html = """
-        <div style="position: fixed; 
-                    bottom: 30px; right: 30px; width: 220px; 
-                    background-color: white; border: 1px solid #ccc; z-index: 9999; 
-                    font-family: 'Poppins', sans-serif; font-size: 14px;
-                    padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.2);">
-        <h5 style="margin: 0 0 10px 0; text-align: center; color: #2c3e50; font-weight:700;">Légende</h5>
-        
-        <!-- Arrows -->
-        <div style="margin-bottom: 8px; font-weight:600; color:#34495e;">Evolution (vs N-1)</div>
+    # Legend
+    legend_html = """
+    <div style="position: fixed; bottom: 30px; right: 30px; width: 220px; 
+                background: white; border: 1px solid #ddd; z-index: 9999; 
+                padding: 15px; border-radius: 12px; font-family: 'Poppins', sans-serif;">
+        <h5 style="margin: 0 0 10px 0; font-weight:700;">Evolution Trend</h5>
         <div style="display: flex; align-items: center; margin-bottom: 5px;">
-            <i class="fa-solid fa-arrow-up" style="color: #2ecc71; font-size: 18px; margin-right: 12px; width: 20px; text-align: center;"></i> 
-            <span style="color:#2ecc71;">En Hausse</span>
+            <div class="marker-badge" style="margin-right:10px;"><i class="fa fa-arrow-up" style="color:#2ecc71"></i></div>
+            <span>Rising Level</span>
         </div>
         <div style="display: flex; align-items: center; margin-bottom: 5px;">
-            <i class="fa-solid fa-arrow-down" style="color: #e74c3c; font-size: 18px; margin-right: 12px; width: 20px; text-align: center;"></i> 
-            <span style="color:#e74c3c;">En Baisse</span>
+            <div class="marker-badge" style="margin-right:10px;"><i class="fa fa-arrow-down" style="color:#e74c3c"></i></div>
+            <span>Falling Level</span>
         </div>
-        <div style="display: flex; align-items: center; margin-bottom: 12px;">
-            <i class="fa-solid fa-minus" style="color: #95a5a6; font-size: 18px; margin-right: 12px; width: 20px; text-align: center;"></i> 
-            <span style="color:#7f8c8d;">Stable</span>
+        <div style="display: flex; align-items: center;">
+            <div class="marker-badge" style="margin-right:10px;"><i class="fa fa-minus" style="color:#95a5a6"></i></div>
+            <span>Stable</span>
         </div>
+    </div>
+    """
+    m.get_root().html.add_child(folium.Element(legend_html))
 
-        <!-- Regions -->
-        <div style="margin-bottom: 5px; font-weight:600; color:#34495e;">Niveau Nappe (Région)</div>
-        <div style="background: linear-gradient(to right, #d7191c, #fdae61, #ffffbf, #abdda4, #2b83ba); height: 8px; width: 100%; border-radius: 4px; margin-bottom:4px;"></div>
-        <div style="display: flex; justify-content: space-between; font-size: 11px; color: #7f8c8d;">
-            <span>Bas</span>
-            <span>Haut</span>
+    # Add Markers
+    for _, row in df.iterrows():
+        icon_color = row.get('trend_color', '#95a5a6')
+        icon_char = row.get('trend_icon', '➡️')
+        
+        # Use FontAwesome icons for a cleaner look
+        fa_icon = "fa-minus"
+        if icon_char == "⬆️": fa_icon = "fa-arrow-up"
+        elif icon_char == "⬇️": fa_icon = "fa-arrow-down"
+        
+        icon_html = f'''
+        <div class="marker-badge">
+            <i class="fa-solid {fa_icon}" style="color: {icon_color}"></i>
         </div>
+        '''
+        
+        latest_val = row.get('latest_value', 0)
+        unit = "m" # Unified
+        
+        delta = row.get('daily_delta', 0)
+        delta_color = "#2ecc71" if delta > 0 else ("#e74c3c" if delta < 0 else "#95a5a6")
+        delta_sign = "+" if delta > 0 else ""
+        
+        popup_html = f"""
+        <div style="font-family: 'Poppins'; width: 240px;">
+            <b style="color: #1a1a1a; font-size:14px;">{row['station_label']}</b><br>
+            <span style="color: #666; font-size:11px;">{row['grouping']}</span><br>
+            <hr style="margin: 8px 0;">
+            <div style="margin-bottom: 5px;">
+                <span style="font-size:16px; font-weight:700;">{latest_val:.3f} {unit}</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <span style="color:{delta_color}; font-size:13px; font-weight:600;">Today: {delta_sign}{delta:.3f}m</span>
+                <span style="color:{icon_color}; font-weight:700; font-size:13px;">{row.get('trend_label', 'Stable')} {icon_char}</span>
+            </div>
+            <div style="font-size:9px; color:#bbb; margin-top:8px; border-top: 1px dashed #eee; padding-top:4px;">
+                API Ref: {row.get('stationReference', 'N/A')}
+            </div>
         </div>
         """
-        m.get_root().html.add_child(folium.Element(legend_html))
-
-        # --- CHOROPLETH LAYER ---
-        try:
-            geojson_url = "https://raw.githubusercontent.com/riatelab/tunisie/master/data/TN-gouvernorats.geojson"
-            # Find Gov Column
-            gov_cols = [c for c in df_day.columns if 'gouvernorat' in c or 'region' in c or 'gov' in c]
-            gov_col = next((c for c in gov_cols if 'fr' in c), gov_cols[0] if gov_cols else None)
-            
-            if gov_col:
-                df_day['gov_clean'] = df_day[gov_col].astype(str).str.title().str.strip()
-                gov_stats = df_day.groupby('gov_clean')['pct'].mean().reset_index()
-                
-                folium.Choropleth(
-                    geo_data=geojson_url,
-                    name="Niveau Par Région",
-                    data=gov_stats,
-                    columns=['gov_clean', 'pct'],
-                    key_on='feature.properties.gouv_fr',
-                    fill_color='RdYlBu',
-                    fill_opacity=0.3,
-                    line_opacity=0.2,
-                    legend_name='Niveau Moyen (%)'
-                ).add_to(m)
-        except Exception:
-            pass
         
-        # --- MARKERS ---
-        name_col = next((c for c in ['nom_ar', 'nom_fr', 'nom', 'station'] if c in df_day.columns), 'station')
-        for _, row in df_day.dropna(subset=['latitude', 'longitude']).iterrows():
-            pct = row.get('pct', 0)
-            if pct < 60: status_color, status_txt = "#e74c3c", "Critique"
-            elif pct < 90: status_color, status_txt = "#f39c12", "Alerte"
-            elif pct < 110: status_color, status_txt = "#2ecc71", "Normal"
-            else: status_color, status_txt = "#3498db", "Excédentaire"
-            
-            name = row.get(name_col, "Inconnu")
-            rain = row.get('pluvio_du_jour', 0)
-            diff = row.get('diff_year', 0)
-            
-            if diff > 0: arrow_icon, arrow_color, arrow_char = "fa-arrow-up", "#2ecc71", "⬆️"
-            elif diff < 0: arrow_icon, arrow_color, arrow_char = "fa-arrow-down", "#e74c3c", "⬇️"
-            else: arrow_icon, arrow_color, arrow_char = "fa-minus", "#95a5a6", "➡️"
-            
-            icon_html = f"""<div style="text-align: center;"><i class="fa-solid {arrow_icon}" style="color: {arrow_color}; font-size: 24px; text-shadow: 0 0 2px #fff;"></i></div>"""
-            
-            tooltip = f"""
-            <div style="font-family: 'Poppins'; text-align: right; direction: rtl; width: 200px;">
-                <b>{name}</b><br>Rain: {rain}mm<br>Diff: <span style="color:{arrow_color}">{arrow_char} {diff:+.1f}</span>
-            </div>
-            """
-            folium.Marker(
-                [row['latitude'], row['longitude']],
-                icon=folium.DivIcon(html=icon_html, class_name="map-icon", icon_size=(30, 30)),
-                popup=folium.Popup(tooltip, max_width=250),
-                tooltip=name
-            ).add_to(m)
+        folium.Marker(
+            [row['latitude'], row['longitude']],
+            icon=folium.DivIcon(html=icon_html, icon_size=(32, 32)),
+            popup=folium.Popup(popup_html, max_width=250),
+            tooltip=row['station_label']
+        ).add_to(m)
 
     st_folium(m, width=None, height=600)
 
 def render_charts(df):
-    col1, col2 = st.columns(2)
+    if df.empty or 'grouping' not in df.columns:
+        st.info("Select items in sidebar to view analytics.")
+        return
+
+    group_name = "Aquifer Layer" if "level" in str(df['measure_url'].iloc[0] if not df.empty else "") else "Location"
+    st.markdown(f"### 📊 Stations per {group_name}")
     
-    with col1:
-        st.markdown("### 📊 Cumul par Gouvernorat")
-        # Find Gov Col
-        gov_cols = [c for c in df.columns if 'gouvernorat' in c or 'region' in c or 'gov' in c]
-        gov_col = next((c for c in gov_cols if 'fr' in c), gov_cols[0] if gov_cols else None)
-        
-        if gov_col:
-            df['gov_clean'] = df[gov_col].astype(str).str.title().str.strip()
-            chart = alt.Chart(df).mark_bar().encode(
-                x=alt.X('gov_clean', sort='-y', title="Gouvernorat"),
-                y=alt.Y('mean(pluvio_du_jour)', title="Pluie Moyenne (mm)"),
-                color=alt.Color('mean(pluvio_du_jour)', scale=alt.Scale(scheme='blues')),
-                tooltip=['gov_clean', 'mean(pluvio_du_jour)']
-            ).properties(height=300)
-            st.altair_chart(chart, use_container_width=True)
-            
-    with col2:
-        st.markdown("### 📈 Top 5 Stations (Pluie)")
-        if 'pluvio_du_jour' in df.columns:
-            name_col = next((c for c in ['nom_ar', 'nom_fr', 'nom', 'station'] if c in df.columns), 'station')
-            top5 = df.nlargest(5, 'pluvio_du_jour')[[name_col, 'pluvio_du_jour']]
-            st.table(top5.style.format({'pluvio_du_jour': "{:.1f} mm"}))
+    chart = alt.Chart(df).mark_bar(cornerRadiusTopLeft=8, cornerRadiusTopRight=8).encode(
+        x=alt.X('grouping:N', sort='-y', title=group_name),
+        y=alt.Y('count()', title="Number of Stations"),
+        color=alt.Color('grouping:N', legend=None),
+        tooltip=['grouping', 'count()']
+    ).properties(height=350)
+    
+    st.altair_chart(chart, use_container_width=True)
+
+def render_station_history(df_hist, station_label):
+    if df_hist.empty:
+        st.info("No historical data available for this station in the selected window.")
+        return
+
+    st.markdown(f"#### 📈 Historical Trend: {station_label}")
+    
+    chart = alt.Chart(df_hist).mark_area(
+        line={'color':'#2b83ba'},
+        color=alt.Gradient(
+            gradient='linear',
+            stops=[alt.GradientStop(color='white', offset=0),
+                   alt.GradientStop(color='#2b83ba', offset=1)],
+            x1=1, x2=1, y1=1, y2=0
+        ),
+        opacity=0.3
+    ).encode(
+        x=alt.X('dateTime:T', title="Date / Time"),
+        y=alt.Y('value:Q', title="Water Level (m)", scale=alt.Scale(zero=False)),
+        tooltip=['dateTime', 'value']
+    ).properties(height=300).interactive()
+    
+    st.altair_chart(chart, use_container_width=True)
 
 def render_data_table(df):
-    st.dataframe(df, use_container_width=True)
+    cols = ['station_label', 'grouping', 'town', 'riverName', 'latest_value', 'daily_delta', 'unit']
+    display_df = df[[c for c in cols if c in df.columns]]
+    st.dataframe(display_df, use_container_width=True)
+    
     csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="📥 Télécharger CSV",
-        data=csv,
-        file_name='donnees_pluviometrie.csv',
-        mime='text/csv',
-    )
+    st.download_button("📥 Export Station List (CSV)", csv, "uk_stations.csv", "text/csv")
