@@ -5,3 +5,4 @@ requests
 xlrd
 folium
 streamlit-folium
+altair
