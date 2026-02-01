@@ -71,16 +71,20 @@ def render_header():
     """, unsafe_allow_html=True)
 
 def render_metrics(df):
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     
     c1.metric("🛰️ Active Stations", f"{len(df)}")
     
     avg_level = df['latest_value'].mean() if 'latest_value' in df.columns else 0
-    unit = df['unit'].iloc[0] if not df.empty and 'unit' in df.columns else "m"
-    c2.metric("💧 Avg Reading", f"{avg_level:.2f} {unit}")
+    c2.metric("💧 Avg Reading", f"{avg_level:.3f} m")
     
-    group_type = "Aquifers"
-    c3.metric(f"📊 {group_type}", f"{df['grouping'].nunique() if 'grouping' in df.columns else 0}")
+    # Advanced KPIs from Session State
+    health = st.session_state.get('health_score', 100)
+    c3.metric("📡 Network Health", f"{health:.1f}%", help="Stations reporting in last 24h")
+    
+    nat_max = st.session_state.get('national_max', 0)
+    c4.metric("🏔️ National Peak", f"{nat_max:.2f} m", help="Highest absolute level currently recorded")
+    
     st.markdown("<br>", unsafe_allow_html=True)
 
 def render_map(df):
@@ -150,8 +154,9 @@ def render_map(df):
                 <span style="color:{delta_color}; font-size:13px; font-weight:600;">Today: {delta_sign}{delta:.3f}m</span>
                 <span style="color:{icon_color}; font-weight:700; font-size:13px;">{row.get('trend_label', 'Stable')} {icon_char}</span>
             </div>
-            <div style="font-size:9px; color:#bbb; margin-top:8px; border-top: 1px dashed #eee; padding-top:4px;">
-                API Ref: {row.get('stationReference', 'N/A')}
+            <div style="font-size:10px; color:#999; margin-top:10px; border-top: 1px dashed #eee; padding-top:6px;">
+                <b>Operational Since:</b> {row.get('date_opened', 'N/A')[:10]}<br>
+                <b>Ref:</b> {row.get('stationReference', 'N/A')}
             </div>
         </div>
         """
@@ -182,14 +187,17 @@ def render_charts(df):
     
     st.altair_chart(chart, use_container_width=True)
 
-def render_station_history(df_hist, station_label):
+def render_station_history(df_hist, station_label, scale_data=None):
     if df_hist.empty:
-        st.info("No historical data available for this station in the selected window.")
+        st.info("No historical data available for this station.")
         return
 
     st.markdown(f"#### 📈 Historical Trend: {station_label}")
     
-    chart = alt.Chart(df_hist).mark_area(
+    # Shading for typical range
+    base = alt.Chart(df_hist).encode(x=alt.X('dateTime:T', title="Date / Time"))
+    
+    chart = base.mark_area(
         line={'color':'#2b83ba'},
         color=alt.Gradient(
             gradient='linear',
@@ -199,12 +207,33 @@ def render_station_history(df_hist, station_label):
         ),
         opacity=0.3
     ).encode(
-        x=alt.X('dateTime:T', title="Date / Time"),
         y=alt.Y('value:Q', title="Water Level (m)", scale=alt.Scale(zero=False)),
         tooltip=['dateTime', 'value']
-    ).properties(height=300).interactive()
+    )
+
+    final_chart = chart
     
-    st.altair_chart(chart, use_container_width=True)
+    if scale_data:
+        # Add Historical Max Marker
+        h_max = scale_data.get('maxOnRecord', {})
+        if isinstance(h_max, dict) and h_max.get('value'):
+            max_line = alt.Chart(pd.DataFrame({'y': [h_max['value']]})).mark_rule(
+                color='#e74c3c', strokeDash=[5,5]
+            ).encode(y='y:Q')
+            max_label = max_line.mark_text(
+                align='left', dx=5, dy=-10, text=f"Max Record: {h_max['value']:.2f}m ({h_max['dateTime'][:10]})", color='#e74c3c'
+            ).encode(x=alt.value(0))
+            final_chart = final_chart + max_line + max_label
+
+    st.altair_chart(final_chart.properties(height=350).interactive(), use_container_width=True)
+    
+    if scale_data:
+        c1, c2, c3 = st.columns(3)
+        h_max = scale_data.get('maxOnRecord', {})
+        h_min = scale_data.get('minOnRecord', {})
+        c1.write(f"🏆 **Max Record:** {h_max.get('value', 0):.2f}m")
+        c2.write(f"📉 **Min Record:** {h_min.get('value', 0):.2f}m")
+        c3.write(f"📏 **Typical Range:** {scale_data.get('typicalRangeLow', 0):.1f}m - {scale_data.get('typicalRangeHigh', 0):.1f}m")
 
 def render_data_table(df):
     cols = ['station_label', 'grouping', 'town', 'riverName', 'latest_value', 'daily_delta', 'unit']

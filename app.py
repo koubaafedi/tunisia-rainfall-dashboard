@@ -68,10 +68,13 @@ if not df.empty:
                 row = dff[dff['station_label'] == sel_label].iloc[0]
                 st_ref = row.get('stationReference')
                 cf = row.get('conv_factor', 1.0)
+                ss_url = row.get('stageScale_url')
+                
                 if st_ref:
                     with st.spinner(f"Loading history for {sel_label}..."):
                         df_h = data.fetch_station_history(st_ref, conv_factor=cf)
-                        ui.render_station_history(df_h, sel_label)
+                        scale_data = data.fetch_station_scale(ss_url, conv_factor=cf) if ss_url else None
+                        ui.render_station_history(df_h, sel_label, scale_data=scale_data)
                 else:
                     st.warning("Historical data reference unavailable.")
 

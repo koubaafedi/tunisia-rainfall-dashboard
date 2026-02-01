@@ -18,9 +18,15 @@ def fetch_stations_metadata() -> pd.DataFrame:
         df = pd.DataFrame(items)
         
         # Safe column mapping
+        # Metadata extraction
         df['latitude'] = pd.to_numeric(df.get('lat'), errors='coerce')
         df['longitude'] = pd.to_numeric(df.get('long'), errors='coerce')
         df['station_label'] = df.get('label', 'Unknown Station')
+        df['date_opened'] = df.get('dateOpened', 'Unknown')
+        
+        # Status parsing
+        df['status_raw'] = df.get('status', 'Active')
+        df['is_active'] = df['status_raw'].apply(lambda x: 'Active' in str(x))
         
         # Use wiskiID as primary ref for Hydrology stations as it matches Flood API better
         if 'stationReference' in df.columns and 'wiskiID' in df.columns:
@@ -28,16 +34,15 @@ def fetch_stations_metadata() -> pd.DataFrame:
         elif 'wiskiID' in df.columns:
             df['stationReference'] = df['wiskiID']
         
-        # Ensure stationReference is a string to prevent merge issues
         df['stationReference'] = df['stationReference'].astype(str)
+        df['stageScale_url'] = df.get('stageScale')
         
-        # Fallback for grouping - Ensure it handles both NaN and missing keys correctly
+        # Fallback for grouping
         df['grouping'] = df.get('aquifer').fillna("Unclassified Aquifer")
-        # Second pass to catch any literal None or NaN that might have slipped through
         df['grouping'] = df['grouping'].replace({None: "Unclassified Aquifer", "nan": "Unclassified Aquifer"})
         
         # Keep only what we have
-        available_cols = ['stationReference', 'station_label', 'latitude', 'longitude', 'grouping']
+        available_cols = ['stationReference', 'station_label', 'latitude', 'longitude', 'grouping', 'date_opened', 'is_active', 'stageScale_url']
         for opt in ['aquifer', 'town', 'riverName']:
             if opt in df.columns:
                 available_cols.append(opt)
@@ -125,6 +130,34 @@ def fetch_trends_data(df_base: pd.DataFrame) -> pd.DataFrame:
     except:
         return df_base
 
+@st.cache_data(ttl=3600)
+def fetch_station_scale(scale_url: str, conv_factor: float = 1.0) -> dict:
+    """Fetches historical extremes and typical ranges for a station."""
+    if not scale_url: return {}
+    try:
+        url = scale_url.replace("http://", "https://")
+        if not url.endswith(".json"): url += ".json"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200: return {}
+        data = resp.json().get('items', {})
+        if not data: return {}
+        
+        def extract_val(field):
+            obj = data.get(field, {})
+            if isinstance(obj, dict):
+                return {'value': obj.get('value', 0) * conv_factor, 'dateTime': obj.get('dateTime', 'N/A')}
+            return obj * conv_factor if obj else None
+
+        return {
+            'maxOnRecord': extract_val('maxOnRecord'),
+            'minOnRecord': extract_val('minOnRecord'),
+            'typicalRangeHigh': data.get('typicalRangeHigh', 0) * conv_factor,
+            'typicalRangeLow': data.get('typicalRangeLow', 0) * conv_factor,
+            'datum': data.get('datum', 0)
+        }
+    except:
+        return {}
+
 def fetch_uk_data(param_type: str = "level") -> pd.DataFrame:
     """Unified entry point with robust error handling and caching."""
     try:
@@ -137,18 +170,24 @@ def fetch_uk_data(param_type: str = "level") -> pd.DataFrame:
         
         if not df_meas.empty:
             df_meas = df_meas.drop_duplicates(subset=['stationReference'])
-            # Inner join to show only stations with ACTIVE measures
             df_merged = pd.merge(df_st, df_meas, on='stationReference', how='inner')
         else:
             return pd.DataFrame()
 
-        # Add trends
         df_final = fetch_trends_data(df_merged)
         
-        # Final cleanup
         if 'trend_icon' not in df_final.columns:
             df_final['trend_icon'], df_final['trend_color'], df_final['trend_label'] = "➡️", "#95a5a6", "Stable"
             df_final['daily_delta'] = 0.0
+
+        # Calculate Health & Extremes for Sidebar Metrics
+        if not df_final.empty:
+            st.session_state.national_max = df_final['latest_value'].max()
+            st.session_state.national_min = df_final['latest_value'].min()
+            # Health Score: % of stations reporting in last 24h
+            day_ago = (datetime.utcnow() - timedelta(hours=24)).strftime('%Y-%m-%dT%H:%M:%SZ')
+            reported_count = len(df_final[df_final['latest_time'] > day_ago])
+            st.session_state.health_score = (reported_count / len(df_final)) * 100
 
         return df_final.dropna(subset=['latitude', 'longitude'])
     except Exception as e:
