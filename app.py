@@ -112,8 +112,8 @@ if not df_all.empty:
                 
                 if ref:
                     with st.spinner(f"Fetching history for {station_name}..."):
-                        df_h = data.fetch_station_history(ref, conv_factor=cf)
-                        scale = data.fetch_station_scale(scale_url, conv_factor=cf) if scale_url else None
+                        df_h = data.fetch_station_history(ref, conversion_factor=cf)
+                        scale = data.fetch_station_scale(scale_url, conversion_factor=cf) if scale_url else None
                         ui.render_station_history(df_h, station_name, scale_data=scale)
                 else:
                     st.warning("Station reference ID missing from API response.")
