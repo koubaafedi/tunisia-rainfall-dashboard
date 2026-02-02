@@ -25,8 +25,7 @@ def clear_data_cache():
 initialize_session_state()
 
 # --- SIDEBAR: NAVIGATION & CONTROLS ---
-st.sidebar.title("🇬🇧 UK Monitoring")
-st.sidebar.info("Operational Oversight: National Groundwater Strategy")
+st.sidebar.title("UK Monitoring")
 st.sidebar.markdown("---")
 
 # 1. Timeline Slider (Comparison Window)
@@ -35,7 +34,7 @@ window_days = st.sidebar.slider(
     "Comparison Offset",
     min_value=0,
     max_value=config.MAX_COMPARISON_DAYS,
-    value=1,
+    value=14,
     help=f"0 = Morning Baseline | 1-{config.MAX_COMPARISON_DAYS} = Historical Snapshot"
 )
 
@@ -79,61 +78,26 @@ if not df_all.empty:
     """, unsafe_allow_html=True)
     
     # Dashboard Navigation
-    tab_map, tab_analytics, tab_raw, tab_about, tab_research = st.tabs([
-        "🗺️ Network Map", 
-        "📊 Trends & Records", 
-        "💾 Data Center",
-        "📖 Info Hub",
-        "🧪 Research Hub"
+    tab_map, tab_research = st.tabs([
+        "GroundTruth", 
+        "Prediction and Accuracy"
     ])
     
     with tab_map:
         ui.render_metrics(df_active)
         ui.render_map(df_active)
 
-    with tab_analytics:
-        st.subheader("📊 Distribution & Comparative Analysis")
-        ui.render_charts(df_active)
-        
-        st.markdown("---")
-        
-        @st.fragment
-        def analysis_fragment(dff: pd.DataFrame):
-            st.subheader("🧐 Station Deep-Dive")
-            station_name = st.selectbox(
-                f"Selected Station (Context: {config.DEFAULT_STATION_HISTORY_DAYS} Days)",
-                options=sorted(dff['station_label'].unique()),
-                key="active_station_picker"
-            )
-            
-            if station_name:
-                match = dff[dff['station_label'] == station_name].iloc[0]
-                ref = match.get('stationReference')
-                cf = match.get('conv_factor', 1.0)
-                scale_url = match.get('stageScale_url')
-                
-                if ref:
-                    with st.spinner(f"Fetching history for {station_name}..."):
-                        df_h = data.fetch_station_history(ref, conversion_factor=cf)
-                        scale = data.fetch_station_scale(scale_url, conversion_factor=cf) if scale_url else None
-                        ui.render_station_history(df_h, station_name, scale_data=scale)
-                else:
-                    st.warning("Station reference ID missing from API response.")
 
-        analysis_fragment(df_active)
-
-    with tab_raw:
-        st.subheader("💾 Exportable Dataset")
-        ui.render_data_table(df_active)
-
-    with tab_about:
-        ui.render_about_page()
 
     with tab_research:
         st.subheader("🧪 Ground Truth vs. Effective Recharge Proxy")
-        st.info("""
-            **Research Thesis:** Effective Recharge ($R_{eff} = Rainfall - ET$) is the primary driver of groundwater level changes. 
-            This hub correlates scientific recharge estimates against actual station trends.
+        st.info(r"""
+            **Mathematical Framework:**
+            $$R_{eff} = \max(0, \sum Rainfall - AET)$$
+            
+            **Trend Determination Logic:**
+            - **Rising**: $R_{eff, latest} > R_{eff, historical}$ (Increased infiltration potential)
+            - **Falling**: $R_{eff, latest} < R_{eff, historical}$ (Decreased infiltration potential)
         """)
         
         with st.spinner("Linking geospatial proxies and calculating scientific recharge indices..."):
